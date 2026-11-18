@@ -7,7 +7,11 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.2.0";
+  const VERSION = "0.2.1";
+  const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
+  const RING_LEN = 2 * Math.PI * OUTER_R;
+  const GAP = 4;                                // gap between segments, in px along the ring
+  const SRC = { solar: "--ppc-pv", grid: "--ppc-grid", battery: "--ppc-battery" };
   // Battery power below this is noise (idle). Above it the battery is charging/discharging, however slowly.
   const IDLE_W = 20;
   // Flow dots only from this size, so a slow trickle doesn't look like the battery is running the house.
@@ -333,6 +337,13 @@
         const n = NODES[k];
         const g = el("g", { class: "node", tabindex: "0", role: "button", "aria-label": n.name });
         const ring = el("circle", { cx: n.x, cy: n.y, r: R, class: "ring", stroke: cssv(n.color) }, g);
+        // outer source-mix ring (home + battery): one arc per source, the node's own ring keeps its colour
+        const arcs = {};
+        if (k === "home" || k === "bat") for (const s of Object.keys(SRC)) {
+          arcs[s] = el("circle", { cx: n.x, cy: n.y, r: OUTER_R, fill: "none", "stroke-width": 4, "stroke-linecap": "round",
+                                   stroke: cssv(SRC[s]), transform: `rotate(-90 ${n.x} ${n.y})`,
+                                   "stroke-dasharray": `0 ${RING_LEN}` }, g);
+        }
         const ic = el("svg", { x: n.x - 10, y: n.y - 25, width: 20, height: 20, viewBox: "0 0 24 24", style: `color:${cssv(n.color)}` }, g);
         ic.innerHTML = ICON[n.icon];
         const val = el("text", { x: n.x, y: n.y + 9, class: "val" }, g);
@@ -340,7 +351,7 @@
         const name = el("text", { x: n.x, y: n.y + R + 14, class: "name" }, g); name.textContent = n.name;
         const sub = el("text", { x: n.x, y: n.y + R + 26, class: "sub" }, g);
         this._bindMoreInfo(g, moreInfoFor[k]);
-        this._nodes[k] = { g, ring, ic, val, unit, sub };
+        this._nodes[k] = { g, ring, ic, val, unit, sub, arcs };
       }
 
       // controls
@@ -507,6 +518,44 @@
         this._lkAge.setAttribute("fill", cssv(mins >= 10 ? "--ppc-off" : mins >= 2 ? "--ppc-water" : "--ppc-muted"));
       } else this._lkAge.textContent = "";
       this._linkG.style.display = LK.bridge || LK.inverter || LK.last_data ? "" : "none";
+
+      // --- where is the power coming from? (home ring and, while charging, battery ring)
+      // Sources right now: solar, Eskom (buying) and battery (discharging). Home gets each in proportion.
+      // Battery charging: solar left over after the house counts first, Eskom covers the rest.
+      const fresh = this._liveOk !== false;
+      const srcW = { solar: Math.max(solar, 0), grid: gridOn === false ? 0 : Math.max(gridW, 0), battery: Math.max(-charge, 0) };
+      if (charge >= -IDLE_W) srcW.battery = 0;                                // not discharging (or noise): no battery share
+      const total = srcW.solar + srcW.grid + srcW.battery;
+      const homeMix = fresh && total > 20 && home > 20 ? srcW : null;
+      let batMix = null;
+      if (fresh && charge > IDLE_W) {
+        const fromSolar = Math.min(charge, Math.max(0, solar - home - (waterOn ? waterW : 0)));
+        batMix = { solar: fromSolar, grid: Math.max(0, charge - fromSolar), battery: 0 };
+      }
+      const paint = (k, mix, fallbackSub) => {
+        const arcs = N[k].arcs, sum = mix ? mix.solar + mix.grid + mix.battery : 0;
+        const parts = Object.keys(SRC).filter(s => sum > 0 && mix[s] / sum >= 0.03).length;   // ignore slivers < 3 %
+        let start = 0;
+        for (const s of Object.keys(SRC)) {
+          let frac = sum > 0 ? mix[s] / sum : 0;
+          if (frac < 0.03) frac = 0;
+          // a lone source fills the ring; several get a small gap each (round caps add ~4 px, so subtract it)
+          const len = frac === 0 ? 0 : parts === 1 ? RING_LEN : Math.max(0.5, frac * RING_LEN - GAP - 4);
+          arcs[s].setAttribute("stroke-dasharray", `${len.toFixed(1)} ${RING_LEN.toFixed(1)}`);
+          arcs[s].setAttribute("stroke-dashoffset", (-(start * RING_LEN + (parts > 1 ? (GAP + 4) / 2 : 0))).toFixed(1));
+          arcs[s].style.display = frac === 0 ? "none" : "";
+          start += frac;
+        }
+        if (!mix || sum <= 0) return fallbackSub;
+        const names = { solar: "solar", grid: "Eskom", battery: "battery" };
+        const used = Object.keys(SRC).filter(s => mix[s] / sum >= 0.1).sort((a, b) => mix[b] - mix[a]);
+        return used.length === 1 ? `from ${names[used[0]]}` : used.map(s => names[s]).join(" + ");
+      };
+      const homeSub = paint("home", homeMix, "in use");
+      N.home.sub.textContent = homeSub;
+      N.home.sub.setAttribute("fill", homeMix ? cssv(SRC[Object.keys(SRC).sort((a, b) => homeMix[b] - homeMix[a])[0]]) : cssv("--ppc-muted"));
+      const batSub = paint("bat", batMix, null);
+      if (batSub) { N.bat.sub.textContent = `charging · ${batSub.replace(/^from /, "")}`; }
 
       // no live data: every wire goes still — moving dots would suggest the old numbers are current
       const moving = this._liveOk !== false;

@@ -56,6 +56,9 @@
                fault: "F13 Grid mode changed" },
     restart: { pv: 0,    grid: 900,  bat: 60,    soc: 78, load: 880, avg: 900,  eskom: "unavailable", ls: "off", prep: "off", geyser: 55, sky: "clear-night",
                status: "unavailable", bridge: "on", resp: "on", live: "on", lastMin: 1 },
+    // house fed by solar + Eskom + battery at once; and a battery charging from solar + Eskom
+    mixed:   { pv: 1500, grid: 600,  bat: 400,   soc: 55, load: 2500, avg: 1500, eskom: "on", ls: "off", prep: "off", geyser: 58, sky: "partlycloudy" },
+    mixcharge:{ pv: 2000, grid: 1500, bat: -2600, soc: 40, load: 900, avg: 900, eskom: "on",  ls: "on",  prep: "on",  geyser: 58, sky: "partlycloudy" },
     lowunits:{ pv: 3000, grid: 0,    bat: -1500, soc: 60, load: 900, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 58, sky: "sunny", units: 62 },
   };
   const name = (location.hash.slice(1) || "sunny").split("-")[0];
