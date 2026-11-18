@@ -6,6 +6,8 @@ a solar inverter, a battery and Eskom (or any grid supply that can switch off).
 It answers the questions people at home actually ask:
 
 - **Is Eskom on?** Based on the grid *voltage*, so "buying 0 kW" is never mistaken for an outage.
+- **Is the data live?** A small connection line under the inverter (bridge → inverter) with "data 2 min ago".
+  When data stops, the numbers fade and the card says so instead of showing old values as current.
 - **Where is the power coming from right now?** Solar, battery, Eskom, home and hot water around the inverter, with
   moving dots showing the direction and size of each flow.
 - **Will the battery last the night?** A small chart from now until tomorrow's sun (from a solar forecast), with the
@@ -38,6 +40,15 @@ Every value comes from an entity you choose, so the card works with any inverter
 ```yaml
 type: custom:pema-power-card
 grid_present: binary_sensor.eskom_power        # on = grid available (voltage based)
+inverter_status: sensor.inverter_state         # 'ok' shows as Normal
+fault: sensor.inverter_fault                   # optional: non-empty = Fault
+link:                                          # optional: connection chain shown under the inverter
+  bridge: binary_sensor.inverter_bridge        # e.g. a Pi that talks RS485 to the inverter
+  bridge_name: Pi B
+  inverter: binary_sensor.inverter_responding
+  live: binary_sensor.inverter_live            # off = numbers fade, wires stop, "No live data since …"
+  last_data: sensor.inverter_last_data         # timestamp → "data 2 min ago"
+weather: weather.home                          # min / max from the daily forecast
 power:
   solar: sensor.inverter_pv_power              # W
   grid: sensor.inverter_grid_power             # W, + buying / - selling

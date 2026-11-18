@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.1.5";
+  const VERSION = "0.2.0";
   // Battery power below this is noise (idle). Above it the battery is charging/discharging, however slowly.
   const IDLE_W = 20;
   // Flow dots only from this size, so a slow trickle doesn't look like the battery is running the house.
@@ -83,6 +83,11 @@
     .name { font: 500 10.5px Roboto, sans-serif; fill: var(--ppc-muted); text-anchor: middle; }
     .sub { font: 500 9.5px Roboto, sans-serif; text-anchor: middle; }
     .node { cursor: pointer; }
+    .stale .val, .stale .unit { opacity: .4; }               /* live data stopped: values are old */
+    .link { cursor: pointer; }
+    .link text { font: 500 10px Roboto, sans-serif; text-anchor: middle; }
+    .link .lk { fill: var(--ppc-muted); }
+    .link .age { font-size: 10.5px; font-weight: 600; }
     .node:focus-visible { outline: none; }
     .node:focus-visible .ring { stroke-width: 5; }
 
@@ -192,7 +197,7 @@
     }
 
     connectedCallback() {
-      this._tick = setInterval(() => { this._lastSig = ""; if (this._hass) this._render(); }, 60_000);  // clock-based text
+      this._tick = setInterval(() => { this._lastSig = ""; if (this._hass) this._render(); }, 30_000);  // clock/age text
       if (this._hass) this._startFeeds();
     }
     disconnectedCallback() {
@@ -212,7 +217,8 @@
     }
     _on(id) { const s = this._st(id); return s ? (s.state === "on" ? true : s.state === "off" ? false : null) : null; }
     _signature() {
-      const c = this._config, ids = [c.grid_present, c.inverter_status, c.weather, ...Object.values(c.power || {}),
+      const c = this._config, ids = [c.grid_present, c.inverter_status, c.fault, c.weather, ...Object.values(c.link || {}),
+        ...Object.values(c.power || {}),
         ...Object.values(c.battery || {}), ...Object.values(c.hot_water || {}), ...Object.values(c.load_shedding || {}),
         ...Object.values(c.prepaid || {})].filter(x => typeof x === "string" && x.includes("."));
       return ids.map(id => { const s = this._st(id); return s ? s.state + "|" + s.last_changed : "-"; }).join(";");
@@ -301,7 +307,24 @@
       const iic = el("svg", { x: INV.x - 13, y: INV.y - 18, width: 26, height: 26, viewBox: "0 0 24 24", style: `color:${cssv("--ppc-inverter")}` }, ig);
       iic.innerHTML = ICON.inv;
       this._invText = el("text", { x: INV.x, y: INV.y + 21, class: "sub", fill: cssv("--ppc-battery") }, ig);
-      this._bindMoreInfo(ig, () => this._config.inverter_status);
+      this._bindMoreInfo(ig, () => (this._hasFault && this._config.fault) || this._config.inverter_status);
+
+      // connection chain under the inverter, in the free space between the bottom circles:
+      //   ● Pi B → ● Inverter     /     data 1 min ago
+      const lg = el("g", { class: "link", tabindex: "0", role: "button", "aria-label": "Inverter connection" });
+      const chainY = 304;
+      this._lkDots = {
+        bridge:   el("circle", { cx: 128, cy: chainY - 3.5, r: 4 }, lg),
+        inverter: el("circle", { cx: 186, cy: chainY - 3.5, r: 4 }, lg),
+      };
+      this._lkLabels = {
+        bridge:   el("text", { x: 152, y: chainY, class: "lk" }, lg),
+        inverter: el("text", { x: 214, y: chainY, class: "lk" }, lg),
+      };
+      el("text", { x: 171, y: chainY, class: "lk" }, lg).textContent = "→";
+      this._lkAge = el("text", { x: 180, y: chainY + 18, class: "age" }, lg);
+      this._bindMoreInfo(lg, () => this._config.link?.last_data || this._config.link?.live);
+      this._linkG = lg;
       this._nodes = {};
       const moreInfoFor = { pv: () => this._config.power.solar, grid: () => this._config.grid_present || this._config.power.grid,
                             bat: () => this._config.battery.soc, home: () => this._config.power.home,
@@ -445,15 +468,53 @@
       this._wires.water.style.display = N.water.g.style.display;
       set("water", temp == null ? "–" : Math.round(temp) + "°C", waterOn && waterW > 20 ? kw(waterW) + " kW" : "",
           HW.switch ? (waterOn ? "heating" : "off") : "", waterOn ? cssv("--ppc-water") : null);
+      // --- inverter status + connection chain (Home Assistant → bridge Pi → inverter) and data age
+      const LK = c.link || {};
+      const live = LK.live ? this._on(LK.live) : null;                       // true / false / null
+      this._liveOk = live;
+      { const ld = LK.last_data ? Date.parse(this._st(LK.last_data)?.state) : NaN; this._lastDataMs = Number.isFinite(ld) ? ld : null; }
+      const fault = (this._st(c.fault)?.state || "").trim();
+      const hasFault = fault && !["unknown", "unavailable", "none", "ok", "0"].includes(fault.toLowerCase());
+      this._hasFault = !!hasFault;
       const st = this._st(c.inverter_status)?.state;
-      this._invText.textContent = !st ? "" : st === "ok" ? "Normal" : st;
-      this._invText.setAttribute("fill", !st || st === "ok" ? cssv("--ppc-battery") : cssv("--ppc-off"));
+      let invText, invColor;
+      if (live === false) { invText = "No data"; invColor = "--ppc-off"; }
+      else if (hasFault) { invText = "Fault"; invColor = "--ppc-off"; }
+      else if (!st || st === "unknown" || st === "unavailable") { invText = c.inverter_status ? "checking…" : ""; invColor = "--ppc-muted"; }
+      else if (st === "ok") { invText = "Normal"; invColor = "--ppc-battery"; }
+      else { invText = st; invColor = "--ppc-off"; }
+      this._invText.textContent = invText;
+      this._invText.setAttribute("fill", cssv(invColor));
+      this.shadowRoot.getElementById("flow").classList.toggle("stale", live === false);
 
-      this._flow("pv", solar, false, "--ppc-pv");
-      this._flow("grid", gridOn === false ? 0 : gridW, gridW < 0, "--ppc-grid");
-      this._flow("bat", Math.abs(charge) >= DOTS_W ? charge : 0, charge > 0, "--ppc-battery");   // trickle = still wire
-      this._flow("home", home, true, "--ppc-home");
-      this._flow("water", waterOn ? waterW : 0, true, "--ppc-water");
+      const dot = (key, id, label) => {
+        const v = id ? this._on(id) : undefined;
+        const show = id !== undefined && id !== null && id !== "";
+        this._lkDots[key].style.display = show ? "" : "none";
+        this._lkLabels[key].style.display = show ? "" : "none";
+        if (!show) return;
+        this._lkDots[key].setAttribute("fill", cssv(v === true ? "--ppc-battery" : v === false ? "--ppc-off" : "--ppc-muted"));
+        this._lkLabels[key].textContent = label;
+      };
+      dot("bridge", LK.bridge, LK.bridge_name || "Pi B");
+      dot("inverter", LK.inverter, "Inverter");
+      const last = LK.last_data ? this._st(LK.last_data)?.state : null;
+      const lastMs = last ? Date.parse(last) : NaN;
+      if (Number.isFinite(lastMs)) {
+        const mins = Math.max(0, (Date.now() - lastMs) / 60e3);
+        const txt = mins < 1 ? "data just now" : mins < 120 ? `data ${Math.round(mins)} min ago` : `no data for ${this._dur(mins / 60)}`;
+        this._lkAge.textContent = mins >= 10 && !txt.startsWith("no data") ? `no data for ${Math.round(mins)} min` : txt;
+        this._lkAge.setAttribute("fill", cssv(mins >= 10 ? "--ppc-off" : mins >= 2 ? "--ppc-water" : "--ppc-muted"));
+      } else this._lkAge.textContent = "";
+      this._linkG.style.display = LK.bridge || LK.inverter || LK.last_data ? "" : "none";
+
+      // no live data: every wire goes still — moving dots would suggest the old numbers are current
+      const moving = this._liveOk !== false;
+      this._flow("pv", moving ? solar : 0, false, "--ppc-pv");
+      this._flow("grid", moving && gridOn !== false ? gridW : 0, gridW < 0, "--ppc-grid");
+      this._flow("bat", moving && Math.abs(charge) >= DOTS_W ? charge : 0, charge > 0, "--ppc-battery");   // trickle = still wire
+      this._flow("home", moving ? home : 0, true, "--ppc-home");
+      this._flow("water", moving && waterOn ? waterW : 0, true, "--ppc-water");
 
       // --- battery panel
       const pills = $("pills");
@@ -467,11 +528,18 @@
 
       const houseW = Math.max(home + (waterOn ? waterW : 0), 50);
       const night = $("night"), one = $("oneline");
+      if (this._liveOk === false) {                       // stale data: say so instead of forecasting from old numbers
+        night.hidden = true; one.hidden = false;
+        const lastTxt = this._lastDataMs ? new Date(this._lastDataMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: this._tz() }) : "";
+        one.querySelector("svg").innerHTML = ICON.inv; one.querySelector("svg").style.color = cssv("--ppc-off");
+        one.querySelector("span").innerHTML = `<b style="color:var(--ppc-off)">No live data${lastTxt ? " since " + lastTxt : ""}</b> · numbers may be out of date`;
+      }
       // Overnight chart whenever the battery is discharging (or Eskom is off).
       // The drain rate matters: with Eskom on, the battery only loses what it actually delivers (often a trickle while
       // Eskom carries the house); with Eskom off it carries the whole house, so use the house-load average.
       const onBattery = soc != null && (gridOn === false || charge < -IDLE_W);
-      if (!onBattery) {                                  // one plain line, no chart
+      if (this._liveOk === false) { /* handled above */ }
+      else if (!onBattery) {                             // one plain line, no chart
         night.hidden = true; one.hidden = false;
         const solarCovers = solar >= houseW;
         one.querySelector("svg").innerHTML = solarCovers ? ICON.sun : ICON.grid;

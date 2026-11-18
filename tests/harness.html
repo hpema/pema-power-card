@@ -45,6 +45,17 @@
     unknown: { pv: 0,    grid: 0,    bat: 600,   soc: 70, load: 600, avg: 600,  eskom: "unavailable", ls: "off", prep: "off", geyser: 50, sky: "clear-night" },
     // Eskom carries the house; inverter holds the battery and trickles ~56 W (real case seen on 18 Nov)
     eskomhold:{ pv: 0,   grid: 906,  bat: 56,    soc: 79, load: 888, avg: 1114, eskom: "on",  ls: "off", prep: "off", geyser: 56, sky: "rainy" },
+    // connection / health cases (base: a quiet evening on Eskom)
+    bridgedown:{ pv: 0,  grid: 900,  bat: 60,    soc: 78, load: 880, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 55, sky: "clear-night",
+               bridge: "off", resp: "off", live: "off", lastMin: 25 },
+    noresp:  { pv: 0,    grid: 900,  bat: 60,    soc: 78, load: 880, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 55, sky: "clear-night",
+               bridge: "on", resp: "off", live: "off", lastMin: 6 },
+    slow:    { pv: 0,    grid: 900,  bat: 60,    soc: 78, load: 880, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 55, sky: "clear-night",
+               lastMin: 4 },
+    fault:   { pv: 2500, grid: 0,    bat: -1200, soc: 70, load: 1100, avg: 1000, eskom: "on", ls: "off", prep: "off", geyser: 57, sky: "sunny",
+               fault: "F13 Grid mode changed" },
+    restart: { pv: 0,    grid: 900,  bat: 60,    soc: 78, load: 880, avg: 900,  eskom: "unavailable", ls: "off", prep: "off", geyser: 55, sky: "clear-night",
+               status: "unavailable", bridge: "on", resp: "on", live: "on", lastMin: 1 },
     lowunits:{ pv: 3000, grid: 0,    bat: -1500, soc: 60, load: 900, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 58, sky: "sunny", units: 62 },
   };
   const name = (location.hash.slice(1) || "sunny").split("-")[0];
@@ -56,7 +67,9 @@
   const states = {
     "sensor.pv": st(s.pv, { unit_of_measurement: "W" }), "sensor.grid": st(s.grid), "sensor.battery": st(s.bat),
     "sensor.load": st(s.load), "sensor.soc": st(s.soc), "sensor.load_avg": st(s.avg),
-    "number.low": st(15), "number.cutoff": st(5), "sensor.status": st("ok"),
+    "number.low": st(15), "number.cutoff": st(5), "sensor.status": st(s.status || "ok"), "sensor.fault": st(s.fault || ""),
+    "binary_sensor.bridge": st(s.bridge || "on"), "binary_sensor.responding": st(s.resp || "on"), "binary_sensor.live": st(s.live || "on"),
+    "sensor.last_data": st(new Date(now - (s.lastMin ?? 0.3) * 60e3).toISOString()),
     "binary_sensor.grid_present": st(s.eskom, {}, s.offMin || 300),
     "weather.home": st(s.sky, { temperature: 24, temperature_unit: "°C" }),
     "sensor.geyser_temp": st(s.geyser),
@@ -74,7 +87,9 @@
   };
   const card = document.createElement("pema-power-card");
   card.setConfig({
-    grid_present: "binary_sensor.grid_present", inverter_status: "sensor.status", weather: "weather.home",
+    grid_present: "binary_sensor.grid_present", inverter_status: "sensor.status", fault: "sensor.fault", weather: "weather.home",
+    link: { bridge: "binary_sensor.bridge", bridge_name: "Pi B", inverter: "binary_sensor.responding",
+            live: "binary_sensor.live", last_data: "sensor.last_data" },
     power: { solar: "sensor.pv", grid: "sensor.grid", battery: "sensor.battery", home: "sensor.load" },
     battery: { soc: "sensor.soc", capacity_kwh: 10, low: "number.low", cutoff: "number.cutoff", night_load: "sensor.load_avg" },
     hot_water: { temperature: "sensor.geyser_temp" },
