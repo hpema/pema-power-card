@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -242,7 +242,7 @@
       const T = this._config?.tou; if (!T) return [];
       const progs = T.programs || [1, 2, 3, 4, 5, 6].map(i => ({ time: `select.${T.prefix}_prog${i}_time`,
         capacity: `number.${T.prefix}_prog${i}_capacity`, charge: `select.${T.prefix}_prog${i}_charge` }));
-      return [T.use_timer, ...progs.flatMap(p => [p.time, p.capacity, p.charge])];
+      return [T.use_timer, T.clock, ...progs.flatMap(p => [p.time, p.capacity, p.charge])];
     }
 
     _startFeeds() {
@@ -250,13 +250,15 @@
       this._feedsStarted = true;
       const c = this._config;
       if (c.solar_forecast !== false) {
+        // fetching and drawing are separate: a drawing problem must not throw the forecast away
         const load = () => this._hass.callWS({ type: "energy/solar_forecast" })
-          .then(r => { this._forecast = r; this._lastSig = ""; this._render(); }).catch(() => { this._forecast = null; });
+          .then(r => { this._forecast = r; }, () => { this._forecast = null; })
+          .then(() => { this._lastSig = ""; try { this._render(); } catch (e) { console.warn("pema-power-card:", e); } });
         load(); this._fcTimer = setInterval(load, 30 * 60_000);
       }
       if (c.weather && this._hass.connection) {
         this._wxUnsub = this._hass.connection.subscribeMessage(
-          m => { this._wx = (m.forecast || [])[0]; this._lastSig = ""; this._render(); },
+          m => { this._wx = (m.forecast || [])[0]; this._lastSig = ""; try { this._render(); } catch (e) { console.warn("pema-power-card:", e); } },
           { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: c.weather }).catch(() => null);
       }
     }
@@ -674,7 +676,9 @@
       }
 
       // --- time-of-use plan (read-only picture of the inverter's daily battery levels)
-      this._renderTou(soc, gridOn, low, charge);
+      // optional panels must never break the rest of the card
+      try { this._renderTou(soc, gridOn, low, charge); }
+      catch (e) { $("tou").hidden = true; console.warn("pema-power-card: battery plan not shown:", e); }
     }
 
     // ---------------------------------------------------- time-of-use plan (read-only) ----
@@ -705,8 +709,26 @@
       box.hidden = !progs;
       if (!progs) return;
       const timerOn = T.use_timer ? this._on(T.use_timer) : true;
-      const nowD = new Date(), parts = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: this._tz() }).formatToParts(nowD);
-      const nowH = +parts.find(p => p.type === "hour").value % 24 + (+parts.find(p => p.type === "minute").value) / 60;
+      // local wall-clock hours (Home Assistant's time zone) for a moment in time
+      const wallH = d => { const p = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: this._tz() }).formatToParts(d);
+                           const g = t => +p.find(x => x.type === t).value; return g("hour") % 24 + g("minute") / 60 + g("second") / 3600; };
+      const realH = wallH(new Date());
+      // The inverter switches slots by ITS OWN clock. If we can read it (tou.clock, e.g. text.ss_date_time),
+      // work out how far it is off and use the inverter's time for 'now' — that is what the battery follows.
+      let nowH = realH, driftMin = 0;
+      const ck = this._st(T.clock);
+      const m = ck && /(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(ck.state);
+      if (m) {
+        const invAtSample = +m[1] + +m[2] / 60 + (+(m[3] || 0)) / 3600;
+        const sampleAt = new Date(ck.last_updated || ck.last_changed);
+        if (!Number.isNaN(sampleAt.getTime())) {
+          let drift = invAtSample - wallH(sampleAt);                          // hours, inverter minus real
+          drift = ((drift + 12) % 24 + 24) % 24 - 12;                         // wrap to -12..12
+          driftMin = Math.round(drift * 60);
+          if (Math.abs(driftMin) >= 5) nowH = ((realH + drift) % 24 + 24) % 24;
+        }
+      }
+      const clockOff = Math.abs(driftMin) >= 5;
       const inSlot = h => p => (h >= p.start && h < p.end) || (h + 24 >= p.start && h + 24 < p.end);
       const cur = progs.find(inSlot(nowH)) || progs[progs.length - 1];
       const hh = h => h === 24 ? "24:00"
@@ -721,6 +743,11 @@
         `<small>${charge > DOTS_W ? `Right now the battery is charging${cur.grid ? " (Eskom may charge it in this slot)" : ""}.`
                : charge < -DOTS_W ? "Right now the battery is helping to run the house."
                : `Right now Eskom is carrying the house and the battery is being held${soc != null ? ` at ${Math.round(soc)}%` : ""}.`}</small>`;
+      if (clockOff) {
+        const by = Math.abs(driftMin) >= 90 ? this._dur(Math.abs(driftMin) / 60) : `${Math.abs(driftMin)} min`;
+        head.innerHTML += `<small style="color:var(--ppc-water);font-weight:600">⚠ Inverter clock is ${by} ${driftMin < 0 ? "behind" : "ahead"} ` +
+          `(it shows ${hh(nowH)}). It changes slots by its own clock.</small>`;
+      }
 
       // 24 h step chart
       const svg = $("touchart"); svg.innerHTML = "";
@@ -749,7 +776,8 @@
       ticks.forEach(h => add("text", { x: X(h), y: B + 20, class: "axis", "text-anchor": h === 0 ? "start" : h === 24 ? "end" : "middle" }, hh(h).slice(0, 2)));
       // now marker + battery dot
       add("line", { x1: X(nowH), x2: X(nowH), y1: T0 - 6, y2: B, class: "nowline" });
-      add("text", { x: X(nowH), y: T0 - 8, class: "axis", "text-anchor": nowH > 21 ? "end" : nowH < 3 ? "start" : "middle" }, "now");
+      add("text", { x: X(nowH), y: T0 - 8, class: "axis", "text-anchor": nowH > 21 ? "end" : nowH < 3 ? "start" : "middle" },
+          clockOff ? `inverter now ${hh(nowH)}` : "now");
       if (soc != null && this._liveOk !== false)
         add("circle", { cx: X(nowH), cy: Y(soc), r: 4.5, fill: cssv("--ppc-battery"), stroke: cssv("--ppc-bg"), "stroke-width": 2 });
     }

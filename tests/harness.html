@@ -59,6 +59,8 @@
     // house fed by solar + Eskom + battery at once; and a battery charging from solar + Eskom
     mixed:   { pv: 1500, grid: 600,  bat: 400,   soc: 55, load: 2500, avg: 1500, eskom: "on", ls: "off", prep: "off", geyser: 58, sky: "partlycloudy" },
     mixcharge:{ pv: 2000, grid: 1500, bat: -2600, soc: 40, load: 900, avg: 900, eskom: "on",  ls: "on",  prep: "on",  geyser: 58, sky: "partlycloudy" },
+    // the real case of 18 Nov: inverter clock 48 min behind, still in its 80 % slot -> battery held at 78 %
+    clockbehind:{ pv: 0, grid: 900, bat: 58, soc: 78, load: 880, avg: 900, eskom: "on", ls: "off", prep: "off", geyser: 55, sky: "rainy", clockOffMin: -48 },
     lowunits:{ pv: 3000, grid: 0,    bat: -1500, soc: 60, load: 900, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 58, sky: "sunny", units: 62 },
   };
   const name = (location.hash.slice(1) || "sunny").split("-")[0];
@@ -81,6 +83,11 @@
     "sensor.units": st(s.units ?? 511.5), "input_number.alert": st(80), "sensor.per_day": st(8.8),
     "input_number.topup": st(0, { min: 0, max: 5000, step: 0.1 }), "input_button.topup": st("unknown"),
     "switch.ss_use_timer": st(s.timer || "on"),
+    // inverter clock, read 1 minute ago; s.clockOffMin shifts it (e.g. -48 = inverter 48 min behind)
+    "text.ss_date_time": (() => { const sample = now - 60e3; const sa = new Date(sample + 2 * 3600e3 + (s.clockOffMin || 0) * 60e3);
+      const p = n => String(n).padStart(2, "0");
+      return { state: `${sa.getUTCFullYear()}-${p(sa.getUTCMonth() + 1)}-${p(sa.getUTCDate())} ${p(sa.getUTCHours())}:${p(sa.getUTCMinutes())}:${p(sa.getUTCSeconds())}`,
+               attributes: {}, last_changed: iso(sample), last_updated: iso(sample) }; })(),
   };
   // sample time-of-use plan (6 programmes, Sunsynk add-on naming)
   [["0:00", 25, "No Grid or Gen"], ["4:00", 25, "No Grid or Gen"], ["8:00", 25, "Allow Grid"], ["12:00", 50, "No Grid or Gen"],
@@ -105,7 +112,7 @@
     load_shedding: { in_effect: "input_boolean.ls_active", prep: "input_boolean.ls_prep", prep_target: "input_number.ls_target" },
     prepaid: { units: "sensor.units", alert_level: "input_number.alert", per_day: "sensor.per_day",
                topup_units: "input_number.topup", topup_button: "input_button.topup" },
-    tou: { prefix: "ss", use_timer: "switch.ss_use_timer" },
+    tou: { prefix: "ss", use_timer: "switch.ss_use_timer", clock: "text.ss_date_time" },
   });
   document.getElementById("slot").appendChild(card);
   card.hass = hass;

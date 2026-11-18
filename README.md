@@ -74,6 +74,8 @@ tou:                                           # optional: read-only picture of 
   prefix: ss                                   # Sunsynk add-on: select.ss_prog1_time, number.ss_prog1_capacity,
                                                #   select.ss_prog1_charge ... prog6
   use_timer: switch.ss_use_timer
+  clock: text.ss_date_time                     # optional: the inverter's own clock; the card follows it and
+                                               #   warns when it is 5+ minutes off real time
   # or list them yourself:
   # programs: [{ time: select.x, capacity: number.y, charge: select.z }, ...]
 prepaid:
