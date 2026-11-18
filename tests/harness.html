@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pema Power Card · test harness</title>
+<style>
+  /* minimal stand-ins for Home Assistant's theme + ha-card */
+  :root { --primary-text-color: #e8eae9; --secondary-text-color: #9aa19e; --card-background-color: #1c1f1e;
+          --secondary-background-color: #232826; --divider-color: #2c3230; --primary-color: #03a9f4; color-scheme: dark; }
+  :root.light { --primary-text-color: #212121; --secondary-text-color: #727272; --card-background-color: #fff;
+                --secondary-background-color: #f4f6f5; --divider-color: #e3e6e5; color-scheme: light; }
+  body { margin: 0; padding: 16px; background: #111614; font-family: Roboto, "Segoe UI", sans-serif; }
+  :root.light body { background: #eef1f0; }
+  .wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  .slot { width: 390px; max-width: 100%; }
+  h1 { color: #9aa19e; font: 500 13px Roboto, sans-serif; margin: 0 0 10px; }
+</style>
+<script>
+  // ha-card stand-in (Home Assistant provides the real one)
+  customElements.define("ha-card", class extends HTMLElement {
+    connectedCallback() { this.style.display = "flex"; this.style.flexDirection = "column";
+      this.style.background = "var(--card-background-color)"; this.style.borderRadius = "12px";
+      this.style.border = "1px solid var(--divider-color)"; }
+  });
+</script>
+<script src="../dist/pema-power-card.js"></script>
+</head>
+<body>
+<h1 id="title"></h1>
+<div class="wrap"><div class="slot" id="slot"></div></div>
+<script>
+  const now = Date.now(), iso = ms => new Date(ms).toISOString();
+  // sample solar forecast: next morning 05:00-10:00 South African time (UTC+2), Wh per hour, like Forecast.Solar sends it
+  const wh = {};
+  const nextSast = h => { const d = new Date(); d.setUTCHours(h - 2, 0, 0, 0); if (d.getTime() <= Date.now()) d.setUTCDate(d.getUTCDate() + 1); return d; };
+  [[5, 806], [6, 2996], [7, 5118], [8, 7013], [9, 8135], [10, 8400]].forEach(([h, v]) => { wh[nextSast(h).toISOString()] = v; });
+
+  const SC = {
+    sunny:   { pv: 8220, grid: 0,    bat: -2620, soc: 92, load: 640, avg: 700,  eskom: "on",  ls: "off", prep: "off", geyser: 61, sky: "sunny" },
+    evening: { pv: 0,    grid: 0,    bat: 910,   soc: 74, load: 910, avg: 760,  eskom: "on",  ls: "off", prep: "off", geyser: 55, sky: "clear-night" },
+    eskom:   { pv: 0,    grid: 0,    bat: 1930,  soc: 63, load: 1930, avg: 1100, eskom: "off", ls: "on",  prep: "off", geyser: 52, sky: "rainy", offMin: 72 },
+    lsday:   { pv: 0,    grid: 1450, bat: -1200, soc: 46, load: 820, avg: 800,  eskom: "on",  ls: "on",  prep: "on",  geyser: 56, sky: "cloudy" },
+    unknown: { pv: 0,    grid: 0,    bat: 600,   soc: 70, load: 600, avg: 600,  eskom: "unavailable", ls: "off", prep: "off", geyser: 50, sky: "clear-night" },
+    lowunits:{ pv: 3000, grid: 0,    bat: -1500, soc: 60, load: 900, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 58, sky: "sunny", units: 62 },
+  };
+  const name = (location.hash.slice(1) || "sunny").split("-")[0];
+  if (location.hash.includes("-light")) document.documentElement.classList.add("light");
+  const s = SC[name] || SC.sunny;
+  document.getElementById("title").textContent = "Scenario: " + name;
+
+  const st = (state, attrs = {}, changedMinAgo = 30) => ({ state: String(state), attributes: attrs, last_changed: iso(now - changedMinAgo * 60e3) });
+  const states = {
+    "sensor.pv": st(s.pv, { unit_of_measurement: "W" }), "sensor.grid": st(s.grid), "sensor.battery": st(s.bat),
+    "sensor.load": st(s.load), "sensor.soc": st(s.soc), "sensor.load_avg": st(s.avg),
+    "number.low": st(15), "number.cutoff": st(5), "sensor.status": st("ok"),
+    "binary_sensor.grid_present": st(s.eskom, {}, s.offMin || 300),
+    "weather.home": st(s.sky, { temperature: 24, temperature_unit: "°C" }),
+    "sensor.geyser_temp": st(s.geyser),
+    "input_boolean.ls_active": st(s.ls), "input_boolean.ls_prep": st(s.prep),
+    "input_number.ls_target": st(50, { min: 50, max: 100, step: 5 }),
+    "sensor.units": st(s.units ?? 511.5), "input_number.alert": st(80), "sensor.per_day": st(8.8),
+    "input_number.topup": st(0, { min: 0, max: 5000, step: 0.1 }), "input_button.topup": st("unknown"),
+  };
+  const calls = [];
+  const hass = {
+    states, config: { time_zone: "Africa/Johannesburg" },
+    callWS: msg => msg.type === "energy/solar_forecast" ? Promise.resolve({ fake: { wh_hours: wh } }) : Promise.reject("n/a"),
+    callService: (d, sv, data) => { calls.push([d, sv, data]); console.log("callService", d, sv, JSON.stringify(data)); return Promise.resolve(); },
+    connection: { subscribeMessage: (cb) => { setTimeout(() => cb({ forecast: [{ temperature: 28, templow: 18 }] }), 50); return Promise.resolve(() => {}); } },
+  };
+  const card = document.createElement("pema-power-card");
+  card.setConfig({
+    grid_present: "binary_sensor.grid_present", inverter_status: "sensor.status", weather: "weather.home",
+    power: { solar: "sensor.pv", grid: "sensor.grid", battery: "sensor.battery", home: "sensor.load" },
+    battery: { soc: "sensor.soc", capacity_kwh: 10, low: "number.low", cutoff: "number.cutoff", night_load: "sensor.load_avg" },
+    hot_water: { temperature: "sensor.geyser_temp" },
+    load_shedding: { in_effect: "input_boolean.ls_active", prep: "input_boolean.ls_prep", prep_target: "input_number.ls_target" },
+    prepaid: { units: "sensor.units", alert_level: "input_number.alert", per_day: "sensor.per_day",
+               topup_units: "input_number.topup", topup_button: "input_button.topup" },
+  });
+  document.getElementById("slot").appendChild(card);
+  card.hass = hass;
+  window.__calls = calls;
+</script>
+</body>
+</html>
