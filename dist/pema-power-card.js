@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.2.1";
+  const VERSION = "0.2.2";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -266,7 +266,7 @@
             <div class="weather" id="wx" hidden><svg viewBox="0 0 24 24" aria-hidden="true" id="wxi"></svg><span id="wxt"></span></div>
             <div class="chip" id="chip"><i></i><span></span></div>
           </div>
-          <svg class="flow" viewBox="0 0 360 356" role="img" aria-label="Power flow" id="flow"></svg>
+          <svg class="flow" viewBox="0 0 360 362" role="img" aria-label="Power flow" id="flow"></svg>
           <div class="panel">
             <div class="row"><b id="soc"></b><small id="bstate"></small></div>
             <div class="pills" id="pills">${"<i></i>".repeat(10)}</div>
@@ -348,8 +348,9 @@
         ic.innerHTML = ICON[n.icon];
         const val = el("text", { x: n.x, y: n.y + 9, class: "val" }, g);
         const unit = el("text", { x: n.x, y: n.y + 21, class: "unit" }, g);
-        const name = el("text", { x: n.x, y: n.y + R + 14, class: "name" }, g); name.textContent = n.name;
-        const sub = el("text", { x: n.x, y: n.y + R + 26, class: "sub" }, g);
+        // labels sit below the outer source ring (r 39 + stroke), with a little air
+        const name = el("text", { x: n.x, y: n.y + OUTER_R + 15, class: "name" }, g); name.textContent = n.name;
+        const sub = el("text", { x: n.x, y: n.y + OUTER_R + 27, class: "sub" }, g);
         this._bindMoreInfo(g, moreInfoFor[k]);
         this._nodes[k] = { g, ring, ic, val, unit, sub, arcs };
       }
