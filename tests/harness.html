@@ -42,6 +42,8 @@
     eskom:   { pv: 0,    grid: 0,    bat: 1930,  soc: 63, load: 1930, avg: 1100, eskom: "off", ls: "on",  prep: "off", geyser: 52, sky: "rainy", offMin: 72 },
     lsday:   { pv: 0,    grid: 1450, bat: -1200, soc: 46, load: 820, avg: 800,  eskom: "on",  ls: "on",  prep: "on",  geyser: 56, sky: "cloudy" },
     unknown: { pv: 0,    grid: 0,    bat: 600,   soc: 70, load: 600, avg: 600,  eskom: "unavailable", ls: "off", prep: "off", geyser: 50, sky: "clear-night" },
+    // Eskom carries the house; inverter holds the battery and trickles ~56 W (real case seen on 18 Nov)
+    eskomhold:{ pv: 0,   grid: 906,  bat: 56,    soc: 79, load: 888, avg: 1114, eskom: "on",  ls: "off", prep: "off", geyser: 56, sky: "rainy" },
     lowunits:{ pv: 3000, grid: 0,    bat: -1500, soc: 60, load: 900, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 58, sky: "sunny", units: 62 },
   };
   const name = (location.hash.slice(1) || "sunny").split("-")[0];

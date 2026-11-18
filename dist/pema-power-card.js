@@ -7,7 +7,9 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.1.0";
+  const VERSION = "0.1.1";
+  // Below this the battery is 'idle': inverters trickle tens of watts while Eskom carries the house (time-of-use hold).
+  const IDLE_W = 150;
   const NS = "http://www.w3.org/2000/svg";
 
   // ---------------------------------------------------------------- icons (24x24) ----
@@ -430,8 +432,8 @@
         N.grid.ring.setAttribute("stroke", cssv("--ppc-grid")); N.grid.ic.style.color = cssv("--ppc-grid");
         set("grid", kw(gridW), "kW", gridOn === null ? "checking…" : gridW > 20 ? "buying" : gridW < -20 ? "selling" : "connected", cssv("--ppc-grid"));
       }
-      set("bat", soc == null ? "–" : Math.round(soc) + "%", kw(charge) + " kW", charge > 20 ? "charging" : charge < -20 ? "discharging" : "idle",
-          charge > 20 ? cssv("--ppc-battery") : charge < -20 ? cssv("--ppc-water") : null);
+      set("bat", soc == null ? "–" : Math.round(soc) + "%", kw(charge) + " kW", charge > IDLE_W ? "charging" : charge < -IDLE_W ? "discharging" : "idle",
+          charge > IDLE_W ? cssv("--ppc-battery") : charge < -IDLE_W ? cssv("--ppc-water") : null);
       set("home", kw(home), "kW", "in use");
       N.water.g.style.display = HW.temperature || HW.switch ? "" : "none";
       this._wires.water.style.display = N.water.g.style.display;
@@ -443,7 +445,7 @@
 
       this._flow("pv", solar, false, "--ppc-pv");
       this._flow("grid", gridOn === false ? 0 : gridW, gridW < 0, "--ppc-grid");
-      this._flow("bat", charge, charge > 0, "--ppc-battery");
+      this._flow("bat", Math.abs(charge) >= IDLE_W ? charge : 0, charge > 0, "--ppc-battery");   // idle = still wire
       this._flow("home", home, true, "--ppc-home");
       this._flow("water", waterOn ? waterW : 0, true, "--ppc-water");
 
@@ -452,24 +454,27 @@
       pills.className = "pills" + (soc != null && soc < 20 ? " crit" : soc != null && soc < 40 ? " low" : "");
       [...pills.children].forEach((p, i) => p.classList.toggle("on", soc != null && i < Math.round(soc / 10)));
       $("soc").textContent = soc == null ? "Battery" : `Battery ${Math.round(soc)}%`;
-      if (charge > 20 && soc != null) {
+      if (charge > IDLE_W && soc != null) {
         $("bstate").textContent = soc >= 99 ? "full" : `charging · full in ${this._dur((100 - soc) / 100 * capWh / charge)}`;
-      } else $("bstate").textContent = charge < -20 ? `using ${kw(-charge)} kW` : "";
+      } else $("bstate").textContent = charge < -IDLE_W ? `using ${kw(-charge)} kW` : soc != null && soc >= 99 ? "full" : "idle";
       $("lglow").textContent = `${low}% low`; $("lgcut").textContent = `${cutoff}% cutoff`;
 
       const houseW = Math.max(home + (waterOn ? waterW : 0), 50);
       const night = $("night"), one = $("oneline");
-      if (charge >= -20 || soc == null) {               // not draining: one plain line, no chart
+      // The overnight chart only when the battery is really carrying the house: Eskom off, or a real discharge.
+      // (With Eskom on, inverters often hold the battery and trickle a few watts — that is not 'running on battery'.)
+      const onBattery = soc != null && (gridOn === false || charge < -IDLE_W);
+      if (!onBattery) {                                  // one plain line, no chart
         night.hidden = true; one.hidden = false;
         const solarCovers = solar >= houseW;
         one.querySelector("svg").innerHTML = solarCovers ? ICON.sun : ICON.grid;
         one.querySelector("svg").style.color = solarCovers ? cssv("--ppc-pv") : cssv("--ppc-grid");
         one.querySelector("span").innerHTML = solarCovers ? "<b>Solar is powering the house now</b>"
           : gridOn === false ? "<b>Running on battery</b>"
-          : `<b>Eskom is powering the house${charge > 20 ? " and charging the battery" : ""}</b>`;
+          : `<b>Eskom is powering the house${charge > IDLE_W ? " and charging the battery" : ""}</b>`;
       } else {
         one.hidden = true; night.hidden = false;
-        this._renderNight(soc, low, cutoff, capWh, -charge, houseW);
+        this._renderNight(soc, low, cutoff, capWh, Math.max(-charge, houseW), houseW);
       }
 
       // --- load-shedding prep: when 'in effect' is on, or the grid is actually off
