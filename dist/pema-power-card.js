@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.1.2";
+  const VERSION = "0.1.3";
   // Battery power below this is noise (idle). Above it the battery is charging/discharging, however slowly.
   const IDLE_W = 20;
   // Flow dots only from this size, so a slow trickle doesn't look like the battery is running the house.
@@ -31,7 +31,9 @@
                          rainy: "rain", pouring: "rain", lightning: "rain", "lightning-rainy": "rain", hail: "rain",
                          snowy: "cloud", windy: "cloud", "windy-variant": "cloud", exceptional: "cloud" };
 
-  // ------------------------------------------------------------ flow geometry (360 x 332) ----
+  // ------------------------------------------------------------ flow geometry (360 x 356) ----
+  // Bottom nodes sit at y=282; their two label lines end near y=345, so the viewBox must reach ~356
+  // or the labels spill onto the battery panel below (v0.1.2 bug).
   const R = 33;
   const INV = { x: 180, y: 166 };
   const NODES = {
@@ -252,7 +254,7 @@
             <div class="weather" id="wx" hidden><svg viewBox="0 0 24 24" aria-hidden="true" id="wxi"></svg><span id="wxt"></span></div>
             <div class="chip" id="chip"><i></i><span></span></div>
           </div>
-          <svg class="flow" viewBox="0 0 360 332" role="img" aria-label="Power flow" id="flow"></svg>
+          <svg class="flow" viewBox="0 0 360 356" role="img" aria-label="Power flow" id="flow"></svg>
           <div class="panel">
             <div class="row"><b id="soc"></b><small id="bstate"></small></div>
             <div class="pills" id="pills">${"<i></i>".repeat(10)}</div>
