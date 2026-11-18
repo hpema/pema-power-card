@@ -15,6 +15,8 @@ It answers the questions people at home actually ask:
 - **Load-shedding:** when load-shedding is in effect (or the grid is off), a prep switch and a "keep battery at least"
   setting appear.
 - **Prepaid electricity:** units left, how many days until the low-units alert, and a box to add units you bought.
+- **Battery plan for the day:** a 24-hour picture of the inverter's time-of-use slots (battery kept at least N%,
+  where Eskom may charge), a "now" marker and one sentence on what is happening right now. Read-only.
 
 Parts that don't apply right now take no space, so the card stays short.
 
@@ -68,6 +70,12 @@ load_shedding:
   in_effect: input_boolean.loadshedding_active
   prep: input_boolean.loadshedding_prep
   prep_target: input_number.loadshedding_prep_soc
+tou:                                           # optional: read-only picture of the inverter's daily plan
+  prefix: ss                                   # Sunsynk add-on: select.ss_prog1_time, number.ss_prog1_capacity,
+                                               #   select.ss_prog1_charge ... prog6
+  use_timer: switch.ss_use_timer
+  # or list them yourself:
+  # programs: [{ time: select.x, capacity: number.y, charge: select.z }, ...]
 prepaid:
   units: sensor.prepaid_units
   alert_level: input_number.prepaid_low_threshold

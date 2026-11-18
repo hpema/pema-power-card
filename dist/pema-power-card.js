@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.2.3";
+  const VERSION = "0.3.0";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -162,6 +162,16 @@
     .msg.ok { color: var(--ppc-battery); } .msg.err { color: var(--ppc-off); }
     .switch:focus-visible, .step button:focus-visible, .btn:focus-visible, form.add input:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 2px; }
     .warn { font-size: .85rem; color: var(--ppc-off); }
+    .touhead { font-size: .9rem; font-weight: 600; }
+    .touhead small { display: block; font-weight: 500; color: var(--ppc-muted); font-size: .78rem; margin-top: 2px; }
+    .touchart .slot { fill: color-mix(in srgb, var(--ppc-battery) 22%, transparent); }
+    .touchart .slot.now { fill: color-mix(in srgb, var(--ppc-battery) 38%, transparent); }
+    .touchart .step { fill: none; stroke: var(--ppc-battery); stroke-width: 2.5; stroke-linejoin: round; }
+    .touchart .pct { font: 700 10px Roboto, sans-serif; fill: var(--ppc-fg); text-anchor: middle; }
+    .touchart .chg { fill: var(--ppc-grid); }
+    .touchart .nowline { stroke: var(--ppc-fg); stroke-width: 1.2; stroke-dasharray: 3 3; }
+    .legend i.lg-floor { border-top: 6px solid color-mix(in srgb, var(--ppc-battery) 40%, transparent); }
+    .legend i.lg-chg { border-top: 4px solid var(--ppc-grid); }
     @media (prefers-reduced-motion: reduce) { .dot { display: none; } .switch::after { transition: none; } }
   `;
 
@@ -224,8 +234,15 @@
       const c = this._config, ids = [c.grid_present, c.inverter_status, c.fault, c.weather, ...Object.values(c.link || {}),
         ...Object.values(c.power || {}),
         ...Object.values(c.battery || {}), ...Object.values(c.hot_water || {}), ...Object.values(c.load_shedding || {}),
-        ...Object.values(c.prepaid || {})].filter(x => typeof x === "string" && x.includes("."));
+        ...Object.values(c.prepaid || {}), ...this._touIds()].filter(x => typeof x === "string" && x.includes("."));
       return ids.map(id => { const s = this._st(id); return s ? s.state + "|" + s.last_changed : "-"; }).join(";");
+    }
+
+    _touIds() {
+      const T = this._config?.tou; if (!T) return [];
+      const progs = T.programs || [1, 2, 3, 4, 5, 6].map(i => ({ time: `select.${T.prefix}_prog${i}_time`,
+        capacity: `number.${T.prefix}_prog${i}_capacity`, charge: `select.${T.prefix}_prog${i}_charge` }));
+      return [T.use_timer, ...progs.flatMap(p => [p.time, p.capacity, p.charge])];
     }
 
     _startFeeds() {
@@ -295,6 +312,11 @@
               <button class="btn ghost" type="button" id="cancel" hidden>Cancel</button>
             </form>
             <div class="msg" id="msg" role="status"></div>
+          </div>
+          <div class="panel" id="tou" hidden>
+            <div class="touhead" id="touhead"></div>
+            <svg class="chart touchart" viewBox="0 0 320 128" role="img" aria-label="Battery plan for the day" id="touchart"></svg>
+            <div class="legend"><span><i class="lg-floor"></i>battery kept at least</span><span><i class="lg-chg"></i>Eskom may charge the battery</span></div>
           </div>
         </ha-card>`;
       const $ = id => root.getElementById(id);
@@ -650,6 +672,86 @@
         $("eta").innerHTML = eta;
         $("addf").hidden = !(PP.topup_units && PP.topup_button);
       }
+
+      // --- time-of-use plan (read-only picture of the inverter's daily battery levels)
+      this._renderTou(soc, gridOn, low, charge);
+    }
+
+    // ---------------------------------------------------- time-of-use plan (read-only) ----
+    _touPrograms() {
+      // tou: { prefix: "ss" } -> select.ss_prog1_time, number.ss_prog1_capacity, select.ss_prog1_charge ... (Sunsynk add-on)
+      // or tou: { programs: [{ time, capacity, charge }, ...] } with explicit entity ids
+      const T = this._config.tou || {};
+      const list = T.programs || [1, 2, 3, 4, 5, 6].map(i => ({
+        time: `select.${T.prefix}_prog${i}_time`, capacity: `number.${T.prefix}_prog${i}_capacity`, charge: `select.${T.prefix}_prog${i}_charge`,
+      }));
+      const out = [];
+      for (const p of list) {
+        const t = this._st(p.time)?.state, cap = this._num(p.capacity);
+        const m = /^(\d{1,2}):(\d{2})$/.exec(t || "");
+        if (!m || cap == null) return null;
+        const chg = (this._st(p.charge)?.state || "").toLowerCase();
+        out.push({ start: +m[1] + (+m[2]) / 60, label: t, cap, grid: chg.includes("grid") && !chg.startsWith("no") });
+      }
+      out.sort((a, b) => a.start - b.start);
+      return out.map((p, i) => ({ ...p, end: i + 1 < out.length ? out[i + 1].start : out[0].start + 24 }));
+    }
+
+    _renderTou(soc, gridOn, low, charge) {
+      const $ = this._$, T = this._config.tou;
+      const box = $("tou");
+      if (!T) { box.hidden = true; return; }
+      const progs = this._touPrograms();
+      box.hidden = !progs;
+      if (!progs) return;
+      const timerOn = T.use_timer ? this._on(T.use_timer) : true;
+      const nowD = new Date(), parts = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: this._tz() }).formatToParts(nowD);
+      const nowH = +parts.find(p => p.type === "hour").value % 24 + (+parts.find(p => p.type === "minute").value) / 60;
+      const inSlot = h => p => (h >= p.start && h < p.end) || (h + 24 >= p.start && h + 24 < p.end);
+      const cur = progs.find(inSlot(nowH)) || progs[progs.length - 1];
+      const hh = h => h === 24 ? "24:00"
+        : String(Math.floor(((h % 24) + 24) % 24)).padStart(2, "0") + ":" + String(Math.round((h % 1) * 60)).padStart(2, "0");
+
+      // headline in plain words
+      const head = $("touhead");
+      if (timerOn === false) head.innerHTML = `Battery plan: timer is off <small>The inverter is not following a daily plan.</small>`;
+      else if (gridOn === false) head.innerHTML = `Eskom is off: the battery runs the house <small>The daily levels below apply again when Eskom is back. In an outage the battery is used down to ${low}%.</small>`;
+      else head.innerHTML = `Now (${hh(cur.start)}–${hh(cur.end)}): the battery is used down to ${cur.cap}%, then Eskom takes over` +
+        // second line describes what is MEASURED right now, not what the plan implies
+        `<small>${charge > DOTS_W ? `Right now the battery is charging${cur.grid ? " (Eskom may charge it in this slot)" : ""}.`
+               : charge < -DOTS_W ? "Right now the battery is helping to run the house."
+               : `Right now Eskom is carrying the house and the battery is being held${soc != null ? ` at ${Math.round(soc)}%` : ""}.`}</small>`;
+
+      // 24 h step chart
+      const svg = $("touchart"); svg.innerHTML = "";
+      const W = 320, L = 26, Rr = 8, T0 = 14, B = 100, X = h => L + (h / 24) * (W - L - Rr), Y = p => B - (p / 100) * (B - T0);
+      const add = (tag, a, txt) => { const e = this._el(tag, a, svg); if (txt != null) e.textContent = txt; return e; };
+      [0, 50, 100].forEach(p => { add("line", { x1: L, x2: W - Rr, y1: Y(p), y2: Y(p), class: "gridl" });
+                                  add("text", { x: L - 4, y: Y(p) + 3, class: "axis", "text-anchor": "end" }, p + "%"); });
+      // slots split at midnight so each piece sits on the 0-24 axis
+      const pieces = [];
+      for (const p of progs) {
+        if (p.end <= 24) pieces.push({ ...p, a: p.start, b: p.end });
+        else { pieces.push({ ...p, a: p.start, b: 24 }); pieces.push({ ...p, a: 0, b: p.end - 24 }); }
+      }
+      pieces.sort((x, y) => x.a - y.a);
+      let d = "";
+      for (const s of pieces) {
+        const isNow = s === pieces.find(q => nowH >= q.a && nowH < q.b);
+        add("rect", { x: X(s.a), y: Y(s.cap), width: Math.max(0, X(s.b) - X(s.a)), height: B - Y(s.cap), class: "slot" + (isNow ? " now" : "") });
+        if (s.grid) add("rect", { x: X(s.a) + 1, y: B + 3, width: Math.max(0, X(s.b) - X(s.a) - 2), height: 5, rx: 2, class: "chg" });
+        if (X(s.b) - X(s.a) > 22) add("text", { x: (X(s.a) + X(s.b)) / 2, y: Y(s.cap) - 4, class: "pct" }, s.cap + "%");
+        d += `${d ? "L" : "M"}${X(s.a).toFixed(1)},${Y(s.cap).toFixed(1)} L${X(s.b).toFixed(1)},${Y(s.cap).toFixed(1)} `;
+      }
+      add("path", { d, class: "step" });
+      // x axis: slot boundaries
+      const ticks = [...new Set([0, ...progs.map(p => p.start % 24), 24])].sort((a, b) => a - b);
+      ticks.forEach(h => add("text", { x: X(h), y: B + 20, class: "axis", "text-anchor": h === 0 ? "start" : h === 24 ? "end" : "middle" }, hh(h).slice(0, 2)));
+      // now marker + battery dot
+      add("line", { x1: X(nowH), x2: X(nowH), y1: T0 - 6, y2: B, class: "nowline" });
+      add("text", { x: X(nowH), y: T0 - 8, class: "axis", "text-anchor": nowH > 21 ? "end" : nowH < 3 ? "start" : "middle" }, "now");
+      if (soc != null && this._liveOk !== false)
+        add("circle", { cx: X(nowH), cy: Y(soc), r: 4.5, fill: cssv("--ppc-battery"), stroke: cssv("--ppc-bg"), "stroke-width": 2 });
     }
 
     // ------------------------------------------------- overnight battery chart ----
