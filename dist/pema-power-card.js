@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.3.1";
+  const VERSION = "0.3.2";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -682,7 +682,7 @@
     }
 
     // ---------------------------------------------------- time-of-use plan (read-only) ----
-    _touPrograms() {
+    _touPrograms(shiftH = 0) {
       // tou: { prefix: "ss" } -> select.ss_prog1_time, number.ss_prog1_capacity, select.ss_prog1_charge ... (Sunsynk add-on)
       // or tou: { programs: [{ time, capacity, charge }, ...] } with explicit entity ids
       const T = this._config.tou || {};
@@ -695,7 +695,9 @@
         const m = /^(\d{1,2}):(\d{2})$/.exec(t || "");
         if (!m || cap == null) return null;
         const chg = (this._st(p.charge)?.state || "").toLowerCase();
-        out.push({ start: +m[1] + (+m[2]) / 60, label: t, cap, grid: chg.includes("grid") && !chg.startsWith("no") });
+        // shiftH moves the inverter's slot times onto real time (inverter clock behind -> slots start later)
+        const start = (((+m[1] + (+m[2]) / 60 + shiftH) % 24) + 24) % 24;
+        out.push({ start, label: t, cap, grid: chg.includes("grid") && !chg.startsWith("no") });
       }
       out.sort((a, b) => a.start - b.start);
       return out.map((p, i) => ({ ...p, end: i + 1 < out.length ? out[i + 1].start : out[0].start + 24 }));
@@ -705,30 +707,32 @@
       const $ = this._$, T = this._config.tou;
       const box = $("tou");
       if (!T) { box.hidden = true; return; }
-      const progs = this._touPrograms();
-      box.hidden = !progs;
-      if (!progs) return;
       const timerOn = T.use_timer ? this._on(T.use_timer) : true;
       // local wall-clock hours (Home Assistant's time zone) for a moment in time
       const wallH = d => { const p = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: this._tz() }).formatToParts(d);
                            const g = t => +p.find(x => x.type === t).value; return g("hour") % 24 + g("minute") / 60 + g("second") / 3600; };
       const realH = wallH(new Date());
       // The inverter switches slots by ITS OWN clock. If we can read it (tou.clock, e.g. text.ss_date_time),
-      // work out how far it is off and use the inverter's time for 'now' — that is what the battery follows.
-      let nowH = realH, driftMin = 0;
+      // work out how far it is off and move the slot times onto REAL time (when the inverter will actually switch).
+      // The chart, 'now' and all wording then stay in real time, like every other clock in the house.
+      const nowH = realH;
+      let driftMin = 0, drift = 0;
       const ck = this._st(T.clock);
       const m = ck && /(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(ck.state);
       if (m) {
         const invAtSample = +m[1] + +m[2] / 60 + (+(m[3] || 0)) / 3600;
         const sampleAt = new Date(ck.last_updated || ck.last_changed);
         if (!Number.isNaN(sampleAt.getTime())) {
-          let drift = invAtSample - wallH(sampleAt);                          // hours, inverter minus real
+          drift = invAtSample - wallH(sampleAt);                              // hours, inverter minus real
           drift = ((drift + 12) % 24 + 24) % 24 - 12;                         // wrap to -12..12
           driftMin = Math.round(drift * 60);
-          if (Math.abs(driftMin) >= 5) nowH = ((realH + drift) % 24 + 24) % 24;
         }
       }
       const clockOff = Math.abs(driftMin) >= 5;
+      // inverter behind by d (drift = -d) -> each slot starts d later in real time
+      const progs = this._touPrograms(clockOff ? -drift : 0);
+      box.hidden = !progs;
+      if (!progs) return;
       const inSlot = h => p => (h >= p.start && h < p.end) || (h + 24 >= p.start && h + 24 < p.end);
       const cur = progs.find(inSlot(nowH)) || progs[progs.length - 1];
       const hh = h => h === 24 ? "24:00"
@@ -745,8 +749,8 @@
                : `Right now Eskom is carrying the house and the battery is being held${soc != null ? ` at ${Math.round(soc)}%` : ""}.`}</small>`;
       if (clockOff) {
         const by = Math.abs(driftMin) >= 90 ? this._dur(Math.abs(driftMin) / 60) : `${Math.abs(driftMin)} min`;
-        head.innerHTML += `<small style="color:var(--ppc-water);font-weight:600">⚠ Inverter clock is ${by} ${driftMin < 0 ? "behind" : "ahead"} ` +
-          `(it shows ${hh(nowH)}). It changes slots by its own clock.</small>`;
+        head.innerHTML += `<small style="color:var(--ppc-water);font-weight:600">⚠ Inverter clock is ${by} ${driftMin < 0 ? "behind" : "ahead"}, ` +
+          `so its slots switch ${by} ${driftMin < 0 ? "late" : "early"} (times shown are real time).</small>`;
       }
 
       // 24 h step chart
@@ -771,13 +775,14 @@
         d += `${d ? "L" : "M"}${X(s.a).toFixed(1)},${Y(s.cap).toFixed(1)} L${X(s.b).toFixed(1)},${Y(s.cap).toFixed(1)} `;
       }
       add("path", { d, class: "step" });
-      // x axis: slot boundaries
-      const ticks = [...new Set([0, ...progs.map(p => p.start % 24), 24])].sort((a, b) => a - b);
-      ticks.forEach(h => add("text", { x: X(h), y: B + 20, class: "axis", "text-anchor": h === 0 ? "start" : h === 24 ? "end" : "middle" }, hh(h).slice(0, 2)));
+      // x axis: slot boundaries (HH:MM when shifted off the hour), plus 0 / 24 at the ends if not too close
+      const bounds = progs.map(p => p.start % 24);
+      const ticks = [...new Set([...bounds, ...[0, 24].filter(e => bounds.every(b => Math.abs(b - e) > 1.6))])].sort((a, b) => a - b);
+      ticks.forEach(h => add("text", { x: X(h), y: B + 20, class: "axis", "text-anchor": h === 0 ? "start" : h === 24 ? "end" : "middle" },
+                             h % 1 ? hh(h) : hh(h).slice(0, 2)));
       // now marker + battery dot
       add("line", { x1: X(nowH), x2: X(nowH), y1: T0 - 6, y2: B, class: "nowline" });
-      add("text", { x: X(nowH), y: T0 - 8, class: "axis", "text-anchor": nowH > 21 ? "end" : nowH < 3 ? "start" : "middle" },
-          clockOff ? `inverter now ${hh(nowH)}` : "now");
+      add("text", { x: X(nowH), y: T0 - 8, class: "axis", "text-anchor": nowH > 21 ? "end" : nowH < 3 ? "start" : "middle" }, "now");
       if (soc != null && this._liveOk !== false)
         add("circle", { cx: X(nowH), cy: Y(soc), r: 4.5, fill: cssv("--ppc-battery"), stroke: cssv("--ppc-bg"), "stroke-width": 2 });
     }
