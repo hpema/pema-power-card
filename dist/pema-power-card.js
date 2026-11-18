@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.2.2";
+  const VERSION = "0.2.3";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -348,9 +348,11 @@
         ic.innerHTML = ICON[n.icon];
         const val = el("text", { x: n.x, y: n.y + 9, class: "val" }, g);
         const unit = el("text", { x: n.x, y: n.y + 21, class: "unit" }, g);
-        // labels sit below the outer source ring (r 39 + stroke), with a little air
-        const name = el("text", { x: n.x, y: n.y + OUTER_R + 15, class: "name" }, g); name.textContent = n.name;
-        const sub = el("text", { x: n.x, y: n.y + OUTER_R + 27, class: "sub" }, g);
+        // labels: below the outer source ring where a node (or its row partner) has one; tight to the ring otherwise.
+        // Top row (solar, Eskom) never has a source ring; Hot water stays level with Battery in the bottom row.
+        const lr = k === "pv" || k === "grid" ? R : OUTER_R;
+        const name = el("text", { x: n.x, y: n.y + lr + 15, class: "name" }, g); name.textContent = n.name;
+        const sub = el("text", { x: n.x, y: n.y + lr + 27, class: "sub" }, g);
         this._bindMoreInfo(g, moreInfoFor[k]);
         this._nodes[k] = { g, ring, ic, val, unit, sub, arcs };
       }
