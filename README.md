@@ -16,7 +16,8 @@ It answers the questions people at home actually ask:
   setting appear.
 - **Prepaid electricity:** units left, how many days until the low-units alert, and a box to add units you bought.
 - **Battery plan for the day:** a 24-hour picture of the inverter's time-of-use slots (battery kept at least N%,
-  where Eskom may charge), a "now" marker and one sentence on what is happening right now. Read-only.
+  where Eskom may charge), the battery level so far today, a "now" marker and one sentence on what is happening
+  right now. Read-only.
 
 Parts that don't apply right now take no space, so the card stays short.
 

@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.3.2";
+  const VERSION = "0.3.3";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -167,11 +167,14 @@
     .touchart .slot { fill: color-mix(in srgb, var(--ppc-battery) 22%, transparent); }
     .touchart .slot.now { fill: color-mix(in srgb, var(--ppc-battery) 38%, transparent); }
     .touchart .step { fill: none; stroke: var(--ppc-battery); stroke-width: 2.5; stroke-linejoin: round; }
-    .touchart .pct { font: 700 10px Roboto, sans-serif; fill: var(--ppc-fg); text-anchor: middle; }
+    .touchart .pct { font: 700 10px Roboto, sans-serif; fill: var(--ppc-fg); text-anchor: middle;
+                     paint-order: stroke; stroke: var(--ppc-soft); stroke-width: 3px; stroke-linejoin: round; }  /* legible over the line */
     .touchart .chg { fill: var(--ppc-grid); }
     .touchart .nowline { stroke: var(--ppc-fg); stroke-width: 1.2; stroke-dasharray: 3 3; }
     .legend i.lg-floor { border-top: 6px solid color-mix(in srgb, var(--ppc-battery) 40%, transparent); }
     .legend i.lg-chg { border-top: 4px solid var(--ppc-grid); }
+    .legend i.lg-soc { border-top: 2px solid var(--ppc-fg); }
+    .touchart .socline { fill: none; stroke: var(--ppc-fg); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; opacity: .9; }
     @media (prefers-reduced-motion: reduce) { .dot { display: none; } .switch::after { transition: none; } }
   `;
 
@@ -215,7 +218,7 @@
       if (this._hass) this._startFeeds();
     }
     disconnectedCallback() {
-      clearInterval(this._tick); clearInterval(this._fcTimer);
+      clearInterval(this._tick); clearInterval(this._fcTimer); clearInterval(this._socTimer);
       if (this._wxUnsub) { this._wxUnsub.then(u => u && u()).catch(() => {}); this._wxUnsub = null; }
       this._feedsStarted = false;
     }
@@ -255,6 +258,21 @@
           .then(r => { this._forecast = r; }, () => { this._forecast = null; })
           .then(() => { this._lastSig = ""; try { this._render(); } catch (e) { console.warn("pema-power-card:", e); } });
         load(); this._fcTimer = setInterval(load, 30 * 60_000);
+      }
+      // battery % since local midnight, for the battery-plan chart (refreshed every 5 minutes)
+      if (c.tou && c.battery?.soc) {
+        const loadSoc = () => {
+          const tzParts = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: this._tz() }).formatToParts(new Date());
+          const hrs = +tzParts.find(p => p.type === "hour").value % 24 + +tzParts.find(p => p.type === "minute").value / 60;
+          const start = new Date(Date.now() - hrs * 3600e3 - 60e3);
+          return this._hass.callWS({ type: "history/history_during_period", start_time: start.toISOString(), entity_ids: [c.battery.soc],
+                                     minimal_response: true, no_attributes: true, significant_changes_only: false })
+            .then(r => { this._socHist = (r[c.battery.soc] || []).map(p => ({ t: (p.lu ?? p.lc) * 1000, v: parseFloat(p.s) }))
+                                                                      .filter(p => Number.isFinite(p.v) && Number.isFinite(p.t)); },
+                  () => { this._socHist = null; })
+            .then(() => { this._lastSig = ""; try { this._render(); } catch (e) { console.warn("pema-power-card:", e); } });
+        };
+        loadSoc(); this._socTimer = setInterval(loadSoc, 5 * 60_000);
       }
       if (c.weather && this._hass.connection) {
         this._wxUnsub = this._hass.connection.subscribeMessage(
@@ -318,7 +336,7 @@
           <div class="panel" id="tou" hidden>
             <div class="touhead" id="touhead"></div>
             <svg class="chart touchart" viewBox="0 0 320 128" role="img" aria-label="Battery plan for the day" id="touchart"></svg>
-            <div class="legend"><span><i class="lg-floor"></i>battery kept at least</span><span><i class="lg-chg"></i>Eskom may charge the battery</span></div>
+            <div class="legend"><span><i class="lg-soc"></i>battery today</span><span><i class="lg-floor"></i>battery kept at least</span><span><i class="lg-chg"></i>Eskom may charge the battery</span></div>
           </div>
         </ha-card>`;
       const $ = id => root.getElementById(id);
@@ -780,6 +798,18 @@
       const ticks = [...new Set([...bounds, ...[0, 24].filter(e => bounds.every(b => Math.abs(b - e) > 1.6))])].sort((a, b) => a - b);
       ticks.forEach(h => add("text", { x: X(h), y: B + 20, class: "axis", "text-anchor": h === 0 ? "start" : h === 24 ? "end" : "middle" },
                              h % 1 ? hh(h) : hh(h).slice(0, 2)));
+      // battery % so far today (real time, midnight -> now), ending at the live value
+      if (this._socHist && this._socHist.length) {
+        const msPerH = 3600e3, midnight = Date.now() - nowH * msPerH;
+        const pts = this._socHist.filter(p => p.t >= midnight - 60e3).map(p => [Math.max(0, (p.t - midnight) / msPerH), p.v]);
+        if (soc != null) pts.push([nowH, soc]);
+        if (pts.length > 1) {
+          // step-after: a value holds until the next reading
+          let dd = `M${X(pts[0][0]).toFixed(1)},${Y(pts[0][1]).toFixed(1)}`;
+          for (let i = 1; i < pts.length; i++) dd += ` L${X(pts[i][0]).toFixed(1)},${Y(pts[i - 1][1]).toFixed(1)} L${X(pts[i][0]).toFixed(1)},${Y(pts[i][1]).toFixed(1)}`;
+          add("path", { d: dd, class: "socline" });
+        }
+      }
       // now marker + battery dot
       add("line", { x1: X(nowH), x2: X(nowH), y1: T0 - 6, y2: B, class: "nowline" });
       add("text", { x: X(nowH), y: T0 - 8, class: "axis", "text-anchor": nowH > 21 ? "end" : nowH < 3 ? "start" : "middle" }, "now");

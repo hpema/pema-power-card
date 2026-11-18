@@ -97,7 +97,20 @@
   const calls = [];
   const hass = {
     states, config: { time_zone: "Africa/Johannesburg" },
-    callWS: msg => msg.type === "energy/solar_forecast" ? Promise.resolve({ fake: { wh_hours: wh } }) : Promise.reject("n/a"),
+    callWS: msg => {
+      if (msg.type === "energy/solar_forecast") return Promise.resolve({ fake: { wh_hours: wh } });
+      if (msg.type === "history/history_during_period") {
+        // sample day: overnight drain to the 25 % floor, solar refill from ~08:00, evening use, ending at the current %
+        const start = Date.parse(msg.start_time), pts = [];
+        for (let t = start; t < now; t += 15 * 60e3) {
+          const h = ((t - start) / 3600e3);
+          const v = h < 6 ? 60 - h * 6 : h < 8 ? 25 : h < 13 ? 25 + (h - 8) * 15 : h < 17 ? 100 : Math.max(s.soc, 100 - (h - 17) * 7);
+          pts.push({ s: String(Math.round(v)), lu: t / 1000 });
+        }
+        return Promise.resolve({ [msg.entity_ids[0]]: pts });
+      }
+      return Promise.reject("n/a");
+    },
     callService: (d, sv, data) => { calls.push([d, sv, data]); console.log("callService", d, sv, JSON.stringify(data)); return Promise.resolve(); },
     connection: { subscribeMessage: (cb) => { setTimeout(() => cb({ forecast: [{ temperature: 28, templow: 18 }] }), 50); return Promise.resolve(() => {}); } },
   };
