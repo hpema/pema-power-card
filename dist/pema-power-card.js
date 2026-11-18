@@ -7,9 +7,11 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.1.1";
-  // Below this the battery is 'idle': inverters trickle tens of watts while Eskom carries the house (time-of-use hold).
-  const IDLE_W = 150;
+  const VERSION = "0.1.2";
+  // Battery power below this is noise (idle). Above it the battery is charging/discharging, however slowly.
+  const IDLE_W = 20;
+  // Flow dots only from this size, so a slow trickle doesn't look like the battery is running the house.
+  const DOTS_W = 150;
   const NS = "http://www.w3.org/2000/svg";
 
   // ---------------------------------------------------------------- icons (24x24) ----
@@ -445,7 +447,7 @@
 
       this._flow("pv", solar, false, "--ppc-pv");
       this._flow("grid", gridOn === false ? 0 : gridW, gridW < 0, "--ppc-grid");
-      this._flow("bat", Math.abs(charge) >= IDLE_W ? charge : 0, charge > 0, "--ppc-battery");   // idle = still wire
+      this._flow("bat", Math.abs(charge) >= DOTS_W ? charge : 0, charge > 0, "--ppc-battery");   // trickle = still wire
       this._flow("home", home, true, "--ppc-home");
       this._flow("water", waterOn ? waterW : 0, true, "--ppc-water");
 
@@ -461,8 +463,9 @@
 
       const houseW = Math.max(home + (waterOn ? waterW : 0), 50);
       const night = $("night"), one = $("oneline");
-      // The overnight chart only when the battery is really carrying the house: Eskom off, or a real discharge.
-      // (With Eskom on, inverters often hold the battery and trickle a few watts — that is not 'running on battery'.)
+      // Overnight chart whenever the battery is discharging (or Eskom is off).
+      // The drain rate matters: with Eskom on, the battery only loses what it actually delivers (often a trickle while
+      // Eskom carries the house); with Eskom off it carries the whole house, so use the house-load average.
       const onBattery = soc != null && (gridOn === false || charge < -IDLE_W);
       if (!onBattery) {                                  // one plain line, no chart
         night.hidden = true; one.hidden = false;
@@ -474,7 +477,9 @@
           : `<b>Eskom is powering the house${charge > IDLE_W ? " and charging the battery" : ""}</b>`;
       } else {
         one.hidden = true; night.hidden = false;
-        this._renderNight(soc, low, cutoff, capWh, Math.max(-charge, houseW), houseW);
+        const avg = this._num(c.battery.night_load);
+        const drainW = gridOn === false ? Math.max(avg ?? houseW, -charge, 50) : Math.max(-charge, IDLE_W);
+        this._renderNight(soc, low, cutoff, capWh, drainW, Math.max(avg ?? houseW, 50));
       }
 
       // --- load-shedding prep: when 'in effect' is on, or the grid is actually off
@@ -537,13 +542,11 @@
       return { t: pts[idx].t, after: pts.slice(idx, idx + 2) };
     }
 
-    _renderNight(soc, low, cutoff, capWh, dischargeW, houseW) {
-      const $ = this._$, c = this._config;
-      const avg = this._num(c.battery.night_load);                // e.g. a 2 h average of house load
-      const nightW = Math.max(avg ?? dischargeW, 50);
-      const pctPerH = nightW / capWh * 100;
+    _renderNight(soc, low, cutoff, capWh, drainW, houseW) {
+      const $ = this._$;
+      const pctPerH = drainW / capWh * 100;                       // drainW: what the battery actually has to supply
       const h15 = (soc - low) / pctPerH, hCut = (soc - cutoff) / pctPerH;
-      const sun = this._sunTakeover(Math.max(avg ?? houseW, 50));
+      const sun = this._sunTakeover(houseW);                       // houseW: what solar must cover to take over
       const head = $("nhead"), chart = $("chart");
       chart.innerHTML = "";
       if (!sun) {                                                 // no forecast: still show the two times
@@ -552,7 +555,7 @@
       }
       const hSun = sun ? (sun.t - Date.now()) / 3600e3 : Math.max(hCut + 1, 6);
       const socAtSun = Math.max(cutoff, soc - pctPerH * hSun);
-      const socEnd = sun ? Math.min(100, socAtSun + sun.after.reduce((a, p) => a + Math.max(0, p.wh - houseW), 0) / capWh * 100) : socAtSun;
+      const socEnd = sun ? Math.min(100, socAtSun + Math.max(8, sun.after.reduce((a, p) => a + Math.max(0, p.wh - houseW), 0) / capWh * 100)) : socAtSun;
       const sunLabel = sun ? new Date(sun.t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: this._tz() }) : "";
 
       const W = 320, H = 132, L = 26, Rr = 12, T = 10, Bt = 108, hEnd = hSun + (sun ? 2 : 0.5);
@@ -588,7 +591,7 @@
       if (sun) {
         if (h15 >= hSun) {
           head.className = "nhead ok";
-          head.innerHTML = `✓ Battery lasts until the sun <small>about ${Math.round(socAtSun)}% left at ${esc(sunLabel)}</small>`;
+          head.innerHTML = `✓ Battery lasts until the sun <small>about ${Math.round(socAtSun)}% left at ${esc(sunLabel)} · ${low}% in ${this._dur(h15)} at this rate</small>`;
         } else {
           head.className = "nhead short";
           head.innerHTML = `Battery reaches ${low}% at ${this._clock(Math.max(0, h15))} <small>sun from about ${esc(sunLabel)}${hCut < hSun ? `, cutoff at ${this._clock(Math.max(0, hCut))}` : ""}</small>`;
