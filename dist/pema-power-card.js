@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.1.4";
+  const VERSION = "0.1.5";
   // Battery power below this is noise (idle). Above it the battery is charging/discharging, however slowly.
   const IDLE_W = 20;
   // Flow dots only from this size, so a slow trickle doesn't look like the battery is running the house.
@@ -515,13 +515,18 @@
         bar.querySelector("i").style.width = clamp(units / max * 100, 0, 100).toFixed(1) + "%";
         bar.querySelector("u").style.left = clamp(alert / max * 100, 0, 100).toFixed(1) + "%";
         bar.querySelector("u").hidden = !alert;
+        // Two clearly named numbers, matching the Solar dashboard tiles:
+        //   'Low-units alert' = days until the balance reaches the alert level; 'Runs out' = days until 0.
         let eta = "";
-        if (isLow) eta = `<span class="low">Below the ${alert}-unit alert level.</span>` + (perDay > 0 ? ` About ${Math.max(0, Math.round(units / perDay))} days of units left.` : "");
-        else if (perDay > 0) {
-          const days = (units - alert) / perDay;
-          const when = new Date(Date.now() + days * 864e5).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: this._tz() });
-          eta = `Alert level (${alert} units) in about <b>${Math.round(days)} days</b>, around ${when}. <small>Using ${perDay.toFixed(1)} units a day.</small>`;
-        }
+        const date = d => new Date(Date.now() + d * 864e5).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: this._tz() });
+        if (perDay > 0) {
+          const toEmpty = units / perDay, toAlert = (units - alert) / perDay;
+          eta = isLow
+            ? `<span class="low">Below the low-units alert (${alert}).</span> Runs out in about <b>${Math.round(toEmpty)} days</b>, around ${date(toEmpty)}.`
+            : `Low-units alert (${alert}) in about <b>${Math.round(toAlert)} days</b>, around ${date(toAlert)}.<br>` +
+              `Runs out in about <b>${Math.round(toEmpty)} days</b>, around ${date(toEmpty)}.`;
+          eta += ` <small>Using ${perDay.toFixed(1)} units a day.</small>`;
+        } else if (isLow) eta = `<span class="low">Below the low-units alert (${alert}).</span>`;
         $("eta").innerHTML = eta;
         $("addf").hidden = !(PP.topup_units && PP.topup_button);
       }
