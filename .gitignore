@@ -1,0 +1,12 @@
+# local previews and screenshots (may contain real house data)
+mockups/
+shots/
+*.png
+!docs/*.png
+
+# environment / editor
+.env
+node_modules/
+.vscode/
+.DS_Store
+Thumbs.db

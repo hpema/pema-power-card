@@ -1,0 +1,7 @@
+{
+  "name": "Pema Power Card",
+  "filename": "pema-power-card.js",
+  "content_in_root": false,
+  "render_readme": true,
+  "homeassistant": "2025.1.0"
+}
