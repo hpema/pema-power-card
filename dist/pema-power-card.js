@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.1.3";
+  const VERSION = "0.1.4";
   // Battery power below this is noise (idle). Above it the battery is charging/discharging, however slowly.
   const IDLE_W = 20;
   // Flow dots only from this size, so a slow trickle doesn't look like the battery is running the house.
@@ -57,7 +57,9 @@
       --ppc-water: #e2632a; --ppc-inverter: #c98a00;
       --ppc-fg: var(--primary-text-color, #212121); --ppc-muted: var(--secondary-text-color, #727272);
       --ppc-bg: var(--ha-card-background, var(--card-background-color, #fff));
-      --ppc-soft: var(--secondary-background-color, #f4f6f5);
+      /* inner panels: a faint tint of the card itself. HA's --secondary-background-color is a strong grey in the
+         light theme and made the panels look disabled (v0.1.3). */
+      --ppc-soft: color-mix(in srgb, var(--ppc-fg) 4%, var(--ppc-bg));
       --ppc-line: var(--divider-color, #e3e6e5);
       --ppc-track: color-mix(in srgb, var(--ppc-muted) 30%, transparent);
       display: block;

@@ -8,8 +8,9 @@
   /* minimal stand-ins for Home Assistant's theme + ha-card */
   :root { --primary-text-color: #e8eae9; --secondary-text-color: #9aa19e; --card-background-color: #1c1f1e;
           --secondary-background-color: #232826; --divider-color: #2c3230; --primary-color: #03a9f4; color-scheme: dark; }
+  /* light values mirror Home Assistant's default light theme (secondary background is a strong grey there) */
   :root.light { --primary-text-color: #212121; --secondary-text-color: #727272; --card-background-color: #fff;
-                --secondary-background-color: #f4f6f5; --divider-color: #e3e6e5; color-scheme: light; }
+                --secondary-background-color: #e5e5e5; --divider-color: rgba(0,0,0,.12); color-scheme: light; }
   body { margin: 0; padding: 16px; background: #111614; font-family: Roboto, "Segoe UI", sans-serif; }
   :root.light body { background: #eef1f0; }
   .wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
