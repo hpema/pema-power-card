@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.3.5";
+  const VERSION = "0.4.0";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -915,4 +915,353 @@
       description: "Family-friendly solar, battery, Eskom, load-shedding and prepaid card.",
       documentationURL: "https://github.com/hpema/pema-power-card" });
   console.info(`%c PEMA-POWER-CARD %c ${VERSION} `, "background:#1e9e62;color:#fff;border-radius:3px 0 0 3px", "background:#333;color:#fff;border-radius:0 3px 3px 0");
+})();
+
+/*
+ * Pema Energy Card — same file, second card. One card, three views (show: today | tomorrow | usage):
+ *   today    — sun made today vs the forecast, weather and cloud per hour, hours the battery was full
+ *   tomorrow — tomorrow's sun forecast, battery at sunrise, when it will be full, best hours for heavy appliances
+ *   usage    — where the house's power came from today (sun / battery / Eskom), hour by hour, spare sun, Eskom per day
+ */
+(() => {
+  const VERSION = "0.4.0";
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const fmt = (x, d = 1) => (+x).toFixed(d);
+  const hh = h => String(Math.floor(h + 1e-6) % 24).padStart(2, "0") + ":" + String(Math.round((h % 1) * 60) % 60).padStart(2, "0");
+  const H = 3600e3, STEP_H = 5 / 60;          // 5-minute statistics
+
+  // One fetch per data set, shared by every card on the page (the three views ask for the same things).
+  const CACHE = new Map();
+  function cached(key, ttlMs, fn) {
+    const c = CACHE.get(key);
+    if (c && Date.now() - c.at < ttlMs) return c.p;
+    const p = fn().catch(e => { CACHE.delete(key); throw e; });
+    CACHE.set(key, { at: Date.now(), p });
+    return p;
+  }
+
+  const STYLE = `
+    :host { --pec-pv:#e0a800; --pec-grid:#1fa5c9; --pec-bat:#1e9e62; --pec-off:#d93a3a;
+      --pec-fg: var(--primary-text-color,#212121); --pec-muted: var(--secondary-text-color,#727272);
+      --pec-bg: var(--ha-card-background, var(--card-background-color,#fff));
+      --pec-soft: color-mix(in srgb, var(--pec-fg) 4%, var(--pec-bg)); --pec-line: var(--divider-color,#e3e6e5);
+      --pec-cloud: color-mix(in srgb, var(--pec-muted) 75%, #6f8aa6); display:block; }
+    ha-card { padding:14px 14px 16px; color:var(--pec-fg); font-variant-numeric:tabular-nums; }
+    h2 { margin:0 0 2px; font-size:1.05rem; font-weight:600; } .sub { color:var(--pec-muted); font-size:.82rem; margin-bottom:10px; }
+    .big { font-size:1.6rem; font-weight:650; letter-spacing:-.3px; } .unit { font-size:.85rem; font-weight:500; color:var(--pec-muted); margin-left:4px; }
+    .row { display:flex; justify-content:space-between; align-items:flex-end; gap:8px; }
+    .bar { display:flex; height:12px; border-radius:6px; overflow:hidden; background:var(--pec-soft); gap:2px; margin:8px 0 6px; } .bar>div { height:100%; }
+    .leg { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.78rem; color:var(--pec-muted); }
+    .leg i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:-1px; }
+    .leg i.dash { height:0; border-top:2px dashed var(--pec-pv); border-radius:0; width:14px; vertical-align:3px; }
+    .leg i.line { height:0; border-top:2px solid var(--pec-pv); border-radius:0; width:14px; vertical-align:3px; }
+    .panel { background:var(--pec-soft); border-radius:10px; padding:10px 12px; margin-top:12px; font-size:.86rem; display:flex; gap:10px; align-items:flex-start; }
+    .panel svg { width:20px; flex:none; margin-top:1px; } .panel b { font-weight:600; }
+    svg { display:block; width:100%; height:auto; overflow:visible; } svg text { fill:var(--pec-muted); font-size:10.5px; font-family:inherit; }
+    .split { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+    .split > div { background:var(--pec-soft); border-radius:10px; padding:8px 10px; } .split .k { font-size:.76rem; color:var(--pec-muted); } .split .v { font-size:1.1rem; font-weight:600; }
+    .note { font-size:.76rem; color:var(--pec-muted); margin-top:8px; } .h3 { margin:16px 0 4px; font-weight:600; font-size:.86rem; }
+    .msg { color:var(--pec-muted); font-size:.86rem; padding:8px 0; }`;
+
+  // tiny drawn weather icons
+  function icon(cond, x, y, s = 18) {
+    const c = s / 2, k = s / 20;
+    const sun = `<circle cx="${x + c}" cy="${y + c}" r="${s * .22}" fill="var(--pec-pv)"/>` + [0, 45, 90, 135, 180, 225, 270, 315].map(a => {
+      const r = a * Math.PI / 180;
+      return `<line x1="${x + c + Math.cos(r) * s * .32}" y1="${y + c + Math.sin(r) * s * .32}" x2="${x + c + Math.cos(r) * s * .45}" y2="${y + c + Math.sin(r) * s * .45}" stroke="var(--pec-pv)" stroke-width="1.6" stroke-linecap="round"/>`;
+    }).join("");
+    const cloud = (dx, dy, kk) => `<path transform="translate(${x + dx},${y + dy}) scale(${kk})" d="M4 14h11a4 4 0 0 0 0-8 5.5 5.5 0 0 0-10.5 1.5A3.3 3.3 0 0 0 4 14z" fill="var(--pec-cloud)" stroke="var(--pec-bg)" stroke-width="1.2"/>`;
+    if (cond === "sunny") return sun;
+    if (cond === "clear-night") return `<path transform="translate(${x},${y}) scale(${k})" d="M13 3a7.5 7.5 0 1 0 5 12.5A6 6 0 0 1 13 3z" fill="var(--pec-cloud)"/>`;
+    if (cond === "partlycloudy") return `<g transform="translate(${-s * .15},${-s * .15})">${sun}</g>` + cloud(s * .1, s * .25, k * .85);
+    if (["rainy", "pouring", "lightning-rainy", "lightning", "hail"].includes(cond))
+      return cloud(0, 0, k) + [5, 10, 15].map(dx => `<line x1="${x + dx * k}" y1="${y + 16 * k}" x2="${x + dx * k - 1.5}" y2="${y + 20 * k}" stroke="var(--pec-grid)" stroke-width="1.6" stroke-linecap="round"/>`).join("");
+    return cloud(0, s * .05, k);
+  }
+  const iconSvg = (c, s) => `<svg viewBox="0 0 ${s} ${s}">${icon(c, 0, 0, s)}</svg>`;
+  const LABEL = { sunny: "Sunny", partlycloudy: "Partly cloudy", cloudy: "Cloudy", rainy: "Rain", pouring: "Heavy rain",
+    "lightning-rainy": "Thunderstorms", lightning: "Thunderstorms", fog: "Fog", windy: "Windy", "clear-night": "Clear" };
+
+  class PemaEnergyCard extends HTMLElement {
+    static getStubConfig() { return { show: "usage", power: { solar: "", grid: "", battery: "", home: "" }, battery: { soc: "" } }; }
+    getCardSize() { return 8; }
+    getGridOptions() { return { columns: 12, min_columns: 6 }; }
+    setConfig(config) {
+      if (!config || !config.power || !config.battery?.soc) throw new Error("pema-energy-card: 'power' and 'battery.soc' are required");
+      if (!["today", "tomorrow", "usage"].includes(config.show || "usage")) throw new Error("pema-energy-card: show must be today, tomorrow or usage");
+      this._config = { show: "usage", battery_discharge_positive: true, forecast_scale: 1, ...config,
+        battery: { capacity_kwh: 10, low: 15, ...config.battery }, forecast: { ...(config.forecast || {}) } };
+      this._render();
+    }
+    set hass(h) {
+      const first = !this._hass; this._hass = h;
+      if (first) this._load();
+      const sig = this._ids().map(id => h.states[id]?.state).join("|");
+      if (sig !== this._sig) { this._sig = sig; this._render(); }
+    }
+    connectedCallback() {
+      this._timer = setInterval(() => this._load(), 5 * 60e3);
+      if (this._hass && !this._data) this._load();
+    }
+    disconnectedCallback() {
+      clearInterval(this._timer);
+      for (const u of this._unsubs || []) u.then(f => f && f()).catch(() => {});
+      this._unsubs = null;
+    }
+    _ids() { const c = this._config || {}; return [c.solar_today, c.forecast.today, c.forecast.today_remaining, c.forecast.tomorrow].filter(Boolean); }
+    _num(id) { const v = parseFloat(this._hass?.states[id]?.state); return Number.isFinite(v) ? v : null; }
+    _numOr(v, d) { if (typeof v === "number") return v; const n = this._num(v); return n ?? d; }
+
+    // fixed offset of the house's time zone (no daylight saving in South Africa; good enough elsewhere for a day view)
+    _offset() {
+      const tz = this._hass?.config?.time_zone, now = new Date();
+      try {
+        const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit",
+          day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(now).map(x => [x.type, x.value]));
+        return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(now.getTime() / 1000) * 1000;
+      } catch (e) { return -now.getTimezoneOffset() * 60e3; }
+    }
+
+    _load() {
+      const hass = this._hass, c = this._config;
+      if (!hass || !c || this._loading) return;
+      this._loading = true;
+      const off = this._offset(), now = Date.now(), mid = now - ((now + off) % (24 * H));
+      const P = c.power, ids = [P.solar, P.home, P.grid, P.battery, c.battery.soc];
+      const stat = (ids, start, period, types) => hass.callWS({ type: "recorder/statistics_during_period", start_time: new Date(start).toISOString(),
+        statistic_ids: ids, period, types });
+      const day = Math.floor((now + off) / (24 * H)), slot = Math.floor(now / (5 * 60e3));
+      const jobs = {
+        fine: cached(`fine:${ids}:${slot}`, 4 * 60e3, () => stat(ids, mid - 24 * H, "5minute", ["mean"])),
+        fc: cached("fc:" + Math.floor(now / (15 * 60e3)), 15 * 60e3, () => hass.callWS({ type: "energy/solar_forecast" })),
+      };
+      if (c.show === "tomorrow") jobs.prof = cached(`prof:${P.home}:${day}`, 6 * H, () => stat([P.home], mid - 7 * 24 * H, "hour", ["mean"]));
+      if (c.show === "usage" && c.grid_import_total)
+        jobs.days = cached(`days:${c.grid_import_total}:${slot}`, 4 * 60e3, () => stat([c.grid_import_total], mid - 6 * 24 * H, "day", ["change"]));
+      if (c.show === "today" && c.weather)
+        jobs.wxHist = cached(`wxh:${c.weather}:${slot}`, 4 * 60e3, () => hass.callWS({ type: "history/history_during_period", start_time: new Date(mid).toISOString(),
+          entity_ids: [c.weather], minimal_response: false, no_attributes: false, significant_changes_only: false }));
+      const keys = Object.keys(jobs);
+      Promise.allSettled(keys.map(k => jobs[k])).then(rs => {
+        const d = { now, mid, off };
+        rs.forEach((r, i) => { d[keys[i]] = r.status === "fulfilled" ? r.value : null; if (r.status === "rejected") console.warn("pema-energy-card:", keys[i], r.reason); });
+        this._data = d; this._loading = false; this._render();
+      });
+      // hourly (and for tomorrow, daily) weather forecast: a live subscription, started once
+      if (c.weather && hass.connection && !this._unsubs && c.show !== "usage") {
+        this._unsubs = [];
+        const sub = (type, cb) => this._unsubs.push(hass.connection.subscribeMessage(m => { cb(m.forecast || []); this._render(); },
+          { type: "weather/subscribe_forecast", forecast_type: type, entity_id: c.weather }).catch(() => null));
+        sub("hourly", f => { this._wxH = f; });
+        if (c.show === "tomorrow") sub("daily", f => { this._wxD = f; });
+      }
+    }
+
+    _render() {
+      if (!this._config) return;
+      const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+      if (!root.firstChild) root.innerHTML = `<style>${STYLE}</style><ha-card></ha-card>`;
+      const card = root.querySelector("ha-card");
+      const d = this._data;
+      if (!this._hass || !d || !d.fine) { card.innerHTML = `<div class="msg">Loading…</div>`; return; }
+      try { card.innerHTML = this["_" + this._config.show](d); }
+      catch (e) { console.warn("pema-energy-card:", e); card.innerHTML = `<div class="msg">Could not draw this card (${esc(e.message)}).</div>`; }
+    }
+
+    // ------------------------------------------------------------------ shared helpers ----
+    _series(d) {
+      const P = this._config.power, f = d.fine || {};
+      const S = (id, sign = 1) => (f[id] || []).map(r => [r.start, sign * (r.mean ?? 0)]);
+      const b = S(P.battery, this._config.battery_discharge_positive ? 1 : -1);
+      return { pv: S(P.solar), load: S(P.home), grid: S(P.grid), bat: b, soc: S(this._config.battery.soc) };
+    }
+    _fc(d) {
+      const r = d.fc || {}, id = this._config.forecast.config_entry, e = id ? r[id] : Object.values(r)[0], m = new Map();
+      for (const [k, v] of Object.entries(e?.wh_hours || {})) m.set(new Date(k).getTime(), v);
+      return t0 => m.get(t0) || 0;
+    }
+    _hour(d, ms) { const x = new Date(ms + d.off); return x.getUTCHours() + x.getUTCMinutes() / 60; }
+    _dayName(d, ms) { return new Date(ms + d.off).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }); }
+    _cap() { return this._numOr(this._config.battery.capacity_kwh, 10); }
+    _condAt(d, t) {
+      // t = start of the hour. Forecast hours are keyed by their start; recorded weather is read at half past.
+      const fh = (this._wxH || []).find(w => Math.abs(new Date(w.datetime).getTime() - t) < 60e3);
+      if (t + H / 2 > d.now && fh) return [fh.condition, fh.cloud_coverage];
+      let c = null, cc = null;
+      for (const p of (d.wxHist?.[this._config.weather] || [])) {
+        const ts = (p.lu ?? p.lc) * 1000; if (ts > t + H / 2) break;
+        c = p.s; cc = p.a?.cloud_coverage ?? cc;
+      }
+      if (c === null && fh) return [fh.condition, fh.cloud_coverage];
+      return [c, cc];
+    }
+    _chartFrame(svg, X, Y, x0, x1, ymax, h0, h1, yBot) {
+      const step = ymax > 6000 ? 2000 : ymax > 3000 ? 1000 : 500;
+      for (let w = 0; w <= ymax; w += step)
+        svg.push(`<line x1="${x0}" x2="${x1}" y1="${Y(w)}" y2="${Y(w)}" stroke="var(--pec-line)"/><text x="${x0 - 5}" y="${Y(w) + 3}" text-anchor="end">${w ? w / 1000 + "kW" : "0"}</text>`);
+      for (let h = h0; h <= h1; h += 2) svg.push(`<text x="${X(h)}" y="${yBot + 14}" text-anchor="middle">${String(h).padStart(2, "0")}</text>`);
+    }
+    _wxStrip(d, svg, X, h0, h1, dayStart) {
+      for (let h = h0; h < h1; h++) {
+        const [c, cc] = this._condAt(d, dayStart + h * H); if (c === null) continue;
+        svg.push(`<rect x="${X(h) + 1}" y="22" width="${X(h + 1) - X(h) - 2}" height="7" rx="2" fill="var(--pec-cloud)" opacity="${.1 + (cc || 0) / 100 * .8}"><title>${hh(h)} · ${esc(LABEL[c] || c)} · cloud ${Math.round(cc || 0)}%</title></rect>`);
+        if ((h - h0) % 2 === 1) svg.push(icon(c, (X(h) + X(h + 1)) / 2 - 9, 0, 18));
+      }
+    }
+
+    // ------------------------------------------------------------------ today ----
+    _today(d) {
+      const c = this._config, s = this._series(d), fcAt = this._fc(d), nowH = this._hour(d, d.now);
+      const made = this._num(c.solar_today) ?? s.pv.filter(r => r[0] >= d.mid).reduce((a, r) => a + r[1] * STEP_H / 1000, 0);
+      const rem = this._num(c.forecast.today_remaining) ?? 0;
+      const W = 360, x0 = 34, x1 = W - 6, h0 = 5, h1 = 19, X = h => x0 + (h - h0) / (h1 - h0) * (x1 - x0);
+      const today = s.pv.filter(r => r[0] >= d.mid);
+      const fcT = []; for (let h = h0; h < h1; h++) fcT.push([h, fcAt(d.mid + h * H)]);
+      const ymax = Math.max(1000, ...today.map(r => r[1]), ...fcT.map(r => r[1])) * 1.08, yTop = 38, Hc = 150, yBot = yTop + Hc, Y = w => yBot - w / ymax * Hc;
+      const full = []; let st = null;
+      for (const [t, v] of s.soc.filter(r => r[0] >= d.mid)) {
+        const h = this._hour(d, t) + STEP_H; if (h < h0 || h > h1) continue;
+        if (v >= 98 && st === null) st = h - STEP_H; if (v < 98 && st !== null) { full.push([st, h - STEP_H]); st = null; }
+      }
+      if (st !== null) full.push([st, Math.min(nowH, h1)]);
+      const svg = [`<svg viewBox="0 0 ${W} ${yBot + 20}" role="img" aria-label="Solar power made today and the forecast">`];
+      this._wxStrip(d, svg, X, h0, h1, d.mid);
+      this._chartFrame(svg, X, Y, x0, x1, ymax, h0, h1, yBot);
+      for (const [a, b] of full) if (b - a > .2)
+        svg.push(`<rect x="${X(a)}" y="${yTop}" width="${X(b) - X(a)}" height="${Hc}" fill="var(--pec-bat)" opacity=".10"/>` +
+          (b - a > 2.5 ? `<text x="${(X(a) + X(b)) / 2}" y="${yTop + 12}" text-anchor="middle" style="fill:var(--pec-bat)">battery full · panels held back</text>` : ""));
+      const fp = fcT.map(([h, v]) => [X(h + .5), Y(v)]);
+      svg.push(`<path d="M${[[X(h0), Y(0)], ...fp, [X(h1), Y(0)]].map(p => p.join(",")).join("L")}" fill="none" stroke="var(--pec-pv)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"/>`);
+      const gp = today.map(r => [this._hour(d, r[0]) + STEP_H / 2, r[1]]).filter(([h]) => h >= h0 && h <= h1).map(([h, v]) => [X(h), Y(v)]);
+      if (gp.length) svg.push(`<path d="M${gp[0][0]},${yBot}L${gp.map(p => p.join(",")).join("L")}L${gp[gp.length - 1][0]},${yBot}Z" fill="var(--pec-pv)" opacity=".22"/><path d="M${gp.map(p => p.join(",")).join("L")}" fill="none" stroke="var(--pec-pv)" stroke-width="2" stroke-linejoin="round"/>`);
+      svg.push(`<line x1="${x0}" x2="${x1}" y1="${yBot}" y2="${yBot}" stroke="var(--pec-muted)" opacity=".5"/>`);
+      if (nowH >= h0 && nowH <= h1) svg.push(`<line x1="${X(nowH)}" x2="${X(nowH)}" y1="${yTop}" y2="${yBot}" stroke="var(--pec-off)" stroke-dasharray="2 3" stroke-width="1.5"/><text x="${X(nowH)}" y="${yTop - 3}" text-anchor="middle" style="fill:var(--pec-off)">now</text>`);
+      svg.push("</svg>");
+      const fullH = full.reduce((a, [x, y]) => a + y - x, 0), done = nowH >= h1 || rem <= .05;
+      return `<h2>${esc(c.title || "Sun today")}</h2><div class="sub">${c.location ? esc(c.location) + " · " : ""}${this._dayName(d, d.now)}</div>
+        <div class="row"><div><span class="big">${fmt(made)}</span><span class="unit">kWh made</span></div><div style="text-align:right">${done ? `<span class="unit">sun is down</span>` : `<span class="big" style="color:var(--pec-muted)">${fmt(rem)}</span><span class="unit">kWh still to come</span>`}</div></div>
+        <div class="bar"><div style="width:${made / (made + rem || 1) * 100}%;background:var(--pec-pv)"></div>${rem > .05 ? `<div style="flex:1;background:repeating-linear-gradient(135deg,transparent 0 4px,color-mix(in srgb,var(--pec-pv) 40%,transparent) 4px 6px)"></div>` : ""}</div>
+        ${svg.join("")}
+        <div class="leg" style="margin-top:6px"><span><i class="line"></i>made</span><span><i class="dash"></i>forecast</span><span><i style="background:var(--pec-bat);opacity:.35"></i>battery full</span><span><i style="background:var(--pec-cloud);opacity:.6"></i>cloud (darker = more)</span></div>
+        ${fullH > .5 ? `<div class="panel">${iconSvg("sunny", 20)}<div>The battery was full for <b>about ${fmt(fullH, 0)} hour${Math.round(fullH) === 1 ? "" : "s"}</b>, so the panels were held back. The gap between the lines in the green band is free sun nobody used.</div></div>` : ""}`;
+    }
+
+    // ------------------------------------------------------------------ tomorrow ----
+    _tomorrow(d) {
+      const c = this._config, s = this._series(d), fcAt = this._fc(d), cap = this._cap(), low = this._numOr(c.battery.low, 15);
+      const tm = d.mid + 24 * H, W = 360, x0 = 34, x1 = W - 6, h0 = 5, h1 = 19, X = h => x0 + (h - h0) / (h1 - h0) * (x1 - x0), yTop = 38, Hc = 110, yBot = yTop + Hc;
+      const fc = []; for (let h = 0; h < 24; h++) fc.push([h, fcAt(tm + h * H)]);
+      const tot = this._num(c.forecast.tomorrow) ?? fc.reduce((a, r) => a + r[1], 0) / 1000;
+      // typical house use per hour of the day (last 7 days)
+      const lp = new Array(24).fill(0), ln = new Array(24).fill(0);
+      for (const r of (d.prof?.[c.power.home] || [])) { const h = Math.floor(this._hour(d, r.start)); if (r.mean != null) { lp[h] += r.mean; ln[h]++; } }
+      if (!ln.some(Boolean)) for (const [t, v] of s.load) { const h = Math.floor(this._hour(d, t)); lp[h] += v; ln[h]++; }
+      const lavg = lp.map((x, i) => ln[i] ? x / ln[i] : 600);
+      const scale = c.forecast_scale || 1, socNow = s.soc.length ? s.soc[s.soc.length - 1][1] : 50;
+      let e = this._numOr(c.battery.soc, socNow) / 100 * cap;
+      for (let h = Math.ceil(this._hour(d, d.now)); h < 24; h++) e = Math.max(cap * low / 100, e - lavg[h] / 1000);
+      let fullAt = null, sunrise = null, socRise = null;
+      for (let h = 0; h < 24; h++) {
+        const p = fc[h][1] * scale, l = lavg[h];
+        if (sunrise === null && p >= l) { sunrise = h; socRise = e / cap * 100; }
+        e = Math.min(cap, Math.max(cap * low / 100, e + (p - l) / 1000));
+        if (fullAt === null && e >= cap * .99 && p > 0) fullAt = h + 1;
+      }
+      const after = fc.filter(([h]) => fullAt !== null && h >= fullAt);
+      const spare = after.reduce((a, [h, p]) => a + Math.max(0, p * scale - lavg[h]), 0) / 1000;
+      const good = after.filter(([h, p]) => p * scale - lavg[h] > 1500).map(r => r[0]);
+      const ymax = Math.max(1000, ...fc.map(r => r[1])) * 1.1, Y = w => yBot - w / ymax * Hc;
+      const svg = [`<svg viewBox="0 0 ${W} ${yBot + 20}" role="img" aria-label="Tomorrow's solar forecast">`];
+      this._wxStrip(d, svg, X, h0, h1, tm);
+      this._chartFrame(svg, X, Y, x0, x1, ymax, h0, h1, yBot);
+      if (good.length) { const a = good[0], b = good[good.length - 1] + 1;
+        svg.push(`<rect x="${X(a)}" y="${yTop}" width="${X(b) - X(a)}" height="${Hc}" fill="var(--pec-bat)" opacity=".10"/><text x="${(X(a) + X(b)) / 2}" y="${yTop + 12}" text-anchor="middle" style="fill:var(--pec-bat)">sun to spare</text>`); }
+      const pts = fc.filter(([h]) => h >= h0 && h < h1).map(([h, v]) => [X(h + .5), Y(v)]);
+      svg.push(`<path d="M${X(h0)},${yBot}L${pts.map(p => p.join(",")).join("L")}L${X(h1)},${yBot}Z" fill="var(--pec-pv)" opacity=".13"/><path d="M${pts.map(p => p.join(",")).join("L")}" fill="none" stroke="var(--pec-pv)" stroke-width="2" stroke-dasharray="5 4"/>`);
+      svg.push(`<line x1="${x0}" x2="${x1}" y1="${yBot}" y2="${yBot}" stroke="var(--pec-muted)" opacity=".5"/></svg>`);
+      const tmDate = new Date(tm + d.off).getUTCDate();
+      const wd = (this._wxD || []).find(w => new Date(new Date(w.datetime).getTime() + d.off).getUTCDate() === tmDate);
+      const wline = wd ? ` · ${esc(LABEL[wd.condition] || wd.condition)}${wd.templow != null ? `, ${Math.round(wd.templow)}–${Math.round(wd.temperature)}°C` : `, up to ${Math.round(wd.temperature)}°C`}` : "";
+      return `<h2>${esc(c.title || "Sun tomorrow")}</h2><div class="sub">${this._dayName(d, tm)}${wline}</div>
+        <div class="row"><div><span class="big">≈ ${fmt(tot, 0)}</span><span class="unit">kWh expected</span></div>${wd ? `<div style="width:34px">${iconSvg(wd.condition, 26)}</div>` : ""}</div>
+        ${svg.join("")}
+        <div class="leg" style="margin-top:4px"><span><i class="dash"></i>forecast</span><span><i style="background:var(--pec-bat);opacity:.35"></i>battery full, sun to spare</span><span><i style="background:var(--pec-cloud);opacity:.6"></i>cloud</span></div>
+        <div class="split"><div><div class="k">Battery at sunrise</div><div class="v">${socRise != null ? Math.round(socRise) + "%" : "–"}${sunrise != null ? ` <span class="unit">${hh(sunrise)}</span>` : ""}</div></div>
+          <div><div class="k">Battery full by</div><div class="v">${fullAt !== null ? hh(fullAt) : "not tomorrow"}</div></div></div>
+        <div class="panel">${iconSvg("sunny", 20)}<div>${good.length ? `Best time for washing, the dishwasher and the pool pump: <b>${hh(good[0])}–${hh(good[good.length - 1] + 1)}</b>. About <b>${fmt(spare, 0)} kWh</b> of sun will be spare once the battery is full.` : `Not much spare sun tomorrow; the battery needs most of it. Run heavy appliances around midday if you can.`}</div></div>
+        <div class="note">Forecast from Forecast.Solar, using the last 7 days of house use.</div>`;
+    }
+
+    // ------------------------------------------------------------------ usage ----
+    _usage(d) {
+      const c = this._config, s = this._series(d), fcAt = this._fc(d), cap = this._cap(), scale = c.forecast_scale || 1;
+      // Every 5 minutes: the house takes sun first, then battery, then Eskom (how the inverter works).
+      // The battery remembers what share of the energy in it came from the sun, so battery power counts as sun or Eskom.
+      let mix = .5;
+      const hrs = [...Array(24)].map(() => ({ sun: 0, bat: 0, grid: 0, spare: 0, load: 0 }));
+      const D = { sun: 0, bat: 0, batSun: 0, grid: 0, gridAll: 0, load: 0, gridChg: 0, spare: 0 };
+      const at = (arr, i) => (arr[i] || [0, 0])[1], k = STEP_H / 1000;
+      for (let i = 0; i < s.pv.length; i++) {
+        const t = s.pv[i][0], p = Math.max(0, s.pv[i][1]), L = Math.max(0, at(s.load, i)), g = at(s.grid, i), b = at(s.bat, i), soc = at(s.soc, i);
+        const gi = Math.max(g, 0), bd = Math.max(b, 0), bc = Math.max(-b, 0);
+        const sh = Math.min(p, L); let r = L - sh; const bh = Math.min(bd, r); r -= bh; const gh = Math.max(r, 0);
+        const sc = Math.min(Math.max(p - sh, 0), bc), gc = bc - sc, stored = Math.max(soc, 5) / 100 * cap;
+        if (bc > 0) mix = (mix * stored + sc * k) / (stored + bc * k);
+        if (t < d.mid) continue;
+        const Hh = hrs[Math.floor(this._hour(d, t))];
+        const spare = soc >= 98 ? Math.max(0, scale * fcAt(t - (t % H)) - p) * k : 0;
+        Hh.sun += sh * k; Hh.bat += bh * k; Hh.grid += gi * k; Hh.load += L * k; Hh.spare += spare;
+        D.sun += sh * k; D.bat += bh * k; D.batSun += bh * mix * k; D.grid += gh * k; D.gridAll += gi * k; D.load += L * k; D.gridChg += gc * k; D.spare += spare;
+      }
+      const fromSun = D.sun + D.batSun, eskom = D.gridAll, pct = fromSun / (fromSun + eskom || 1) * 100;
+      const eskHouse = Math.max(0, eskom - D.gridChg), tot = D.sun + D.bat + eskHouse, segW = v => (v / (tot || 1) * 100).toFixed(1) + "%";
+      const W = 360, x0 = 24, x1 = W - 6, yTop = 18, Hc = 120, yBot = yTop + Hc, bw = (x1 - x0) / 24, X = h => x0 + h * bw;
+      const ymax = Math.max(1, ...hrs.map(x => x.sun + x.bat + x.grid + x.spare)) * 1.05, Y = v => v / ymax * Hc;
+      const svg = [`<svg viewBox="0 0 ${W} ${yBot + 20}" role="img" aria-label="Where the house's power came from, hour by hour">`];
+      const vstep = ymax > 6 ? 2 : 1;
+      for (let v = 0; v <= ymax; v += vstep) svg.push(`<line x1="${x0}" x2="${x1}" y1="${yBot - Y(v)}" y2="${yBot - Y(v)}" stroke="var(--pec-line)"/><text x="${x0 - 5}" y="${yBot - Y(v) + 3}" text-anchor="end">${v}</text>`);
+      hrs.forEach((x, h) => {
+        let y = yBot;
+        const seg = (v, col) => { if (v < .005) return ""; const hg = Y(v); y -= hg; return `<rect x="${X(h) + 1.5}" y="${y + 1}" width="${bw - 3}" height="${Math.max(hg - 1, 1)}" rx="1.5" fill="var(--pec-${col})"/>`; };
+        const tip = `${hh(h)}–${hh(h + 1)}: used ${fmt(x.load, 2)} kWh · sun ${fmt(x.sun, 2)} · battery ${fmt(x.bat, 2)} · Eskom ${fmt(x.grid, 2)}${x.spare > .05 ? ` · spare sun ${fmt(x.spare, 1)}` : ""}`;
+        svg.push(`<g><title>${tip}</title>${seg(x.grid, "grid")}${seg(x.bat, "bat")}${seg(x.sun, "pv")}`);
+        if (x.spare > .05) svg.push(`<rect x="${X(h) + 1.5}" y="${y - Y(x.spare)}" width="${bw - 3}" height="${Math.max(Y(x.spare) - 1, 1)}" rx="1.5" fill="none" stroke="var(--pec-pv)" stroke-dasharray="2 2"/>`);
+        svg.push("</g>");
+      });
+      for (let h = 0; h <= 24; h += 3) svg.push(`<text x="${X(h)}" y="${yBot + 14}" text-anchor="middle">${String(h % 24).padStart(2, "0")}</text>`);
+      svg.push(`<text x="${x0 - 5}" y="${yTop - 10}" text-anchor="end">kWh</text>`);
+      const nowH = this._hour(d, d.now);
+      svg.push(`<line x1="${X(nowH)}" x2="${X(nowH)}" y1="${yTop}" y2="${yBot}" stroke="var(--pec-off)" stroke-dasharray="2 3" stroke-width="1.5"/><line x1="${x0}" x2="${x1}" y1="${yBot}" y2="${yBot}" stroke="var(--pec-muted)" opacity=".5"/></svg>`);
+      // Eskom units per day (meter counter)
+      let week = "";
+      const gi = (d.days?.[c.grid_import_total] || []).map(r => [r.start, r.change ?? 0]);
+      if (gi.length) {
+        const gmax = Math.max(1, ...gi.map(r => r[1])), bw7 = (W - 20) / gi.length, w7 = [`<svg viewBox="0 0 ${W} 72" role="img" aria-label="Eskom units per day">`];
+        gi.forEach(([t, v], i) => {
+          const hg = v / gmax * 38, x = 10 + i * bw7, last = i === gi.length - 1;
+          w7.push(`<g><title>${this._dayName(d, t)}: ${fmt(v)} kWh from Eskom</title><rect x="${x + bw7 * .24}" y="${52 - hg}" width="${bw7 * .52}" height="${Math.max(hg, 1.5)}" rx="3" fill="var(--pec-grid)" opacity="${last ? 1 : .5}"/>` +
+            `<text x="${x + bw7 / 2}" y="${47 - hg}" text-anchor="middle" style="fill:var(--pec-fg)">${fmt(v)}</text><text x="${x + bw7 / 2}" y="66" text-anchor="middle">${last ? "Today" : new Date(t + d.off).toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" })}</text></g>`);
+        });
+        w7.push("</svg>");
+        const prev = gi.slice(0, -1), avg = prev.reduce((a, r) => a + r[1], 0) / Math.max(1, prev.length);
+        week = `<div class="h3">Eskom units per day</div><div class="note" style="margin:0 0 4px">Lower is better${prev.length ? ` · the ${prev.length} days before today averaged ${fmt(avg)} kWh` : ""}</div>${w7.join("")}`;
+      }
+      const eve = hrs.slice(17).reduce((a, x) => a + x.grid, 0), batGrid = Math.max(0, D.bat - D.batSun), standby = eskom - D.grid - D.gridChg;
+      return `<h2>${esc(c.title || "Where the house's power came from")}</h2><div class="sub">Today so far · the house used ${fmt(D.load)} kWh</div>
+        <div class="row"><div><span class="big">${Math.round(pct)}%</span><span class="unit">from the sun</span></div><div style="text-align:right"><span class="big">${fmt(eskom)}</span><span class="unit">kWh from Eskom</span></div></div>
+        <div class="bar" style="height:16px"><div style="width:${segW(D.sun)};background:var(--pec-pv)" title="Sun, used straight away"></div><div style="width:${segW(D.batSun)};background:var(--pec-bat)" title="Battery, filled by the sun"></div>${batGrid > .05 ? `<div style="width:${segW(batGrid)};background:repeating-linear-gradient(135deg,var(--pec-bat) 0 4px,var(--pec-grid) 4px 7px)" title="Battery, filled by Eskom"></div>` : ""}<div style="flex:1;background:var(--pec-grid)" title="Eskom"></div></div>
+        <div class="leg"><span><i style="background:var(--pec-pv)"></i>Sun ${fmt(D.sun)}</span><span><i style="background:var(--pec-bat)"></i>Battery ${fmt(D.bat)}</span><span><i style="background:var(--pec-grid)"></i>Eskom ${fmt(eskHouse)}</span></div>
+        <div class="note">${D.bat > .1 ? `The battery's ${fmt(D.bat)} kWh was ${Math.round(D.batSun / D.bat * 100)}% sun stored earlier, so it counts as sun.` : ""}${D.gridChg > .2 ? ` Eskom also put ${fmt(D.gridChg)} kWh into the battery.` : ""}${standby > .2 ? ` About ${fmt(standby)} kWh of the Eskom units is the inverter's own small draw.` : ""}</div>
+        <div class="h3">Hour by hour</div>${svg.join("")}
+        <div class="leg"><span><i style="background:var(--pec-pv)"></i>sun</span><span><i style="background:var(--pec-bat)"></i>battery</span><span><i style="background:var(--pec-grid)"></i>Eskom</span><span><i style="border:1.5px dashed var(--pec-pv);background:none"></i>spare sun, not used</span></div>
+        <div class="panel">${iconSvg("sunny", 20)}<div>${D.spare > 1 ? `About <b>${fmt(D.spare, 0)} kWh</b> of sun went unused today (dashed boxes). Washing, the dishwasher, ironing or the pool pump in those hours cost nothing.` : `The sun was used well today.`}${eve > .5 ? ` Most Eskom units went in the evening: ${fmt(eve)} kWh after 17:00.` : ""}</div></div>
+        ${week}`;
+    }
+  }
+
+  if (!customElements.get("pema-energy-card")) customElements.define("pema-energy-card", PemaEnergyCard);
+  window.customCards = window.customCards || [];
+  if (!window.customCards.some(c => c.type === "pema-energy-card"))
+    window.customCards.push({ type: "pema-energy-card", name: "Pema Energy Card", preview: false,
+      description: "Sun today, sun tomorrow, and where the house's power came from.", documentationURL: "https://github.com/hpema/pema-power-card" });
 })();
