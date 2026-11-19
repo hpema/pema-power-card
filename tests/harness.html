@@ -61,6 +61,8 @@
     mixcharge:{ pv: 2000, grid: 1500, bat: -2600, soc: 40, load: 900, avg: 900, eskom: "on",  ls: "on",  prep: "on",  geyser: 58, sky: "partlycloudy" },
     // the real case of 18 Nov: inverter clock 48 min behind, still in its 80 % slot -> battery held at 78 %
     clockbehind:{ pv: 0, grid: 900, bat: 58, soc: 78, load: 880, avg: 900, eskom: "on", ls: "off", prep: "off", geyser: 55, sky: "rainy", clockOffMin: -48 },
+    // the real case of 19 Nov: battery full, trickle 20 W, solar ~ house, Eskom 40 W noise -> should read 'full', no ring
+    fulltrickle:{ pv: 1490, grid: 40, bat: -20, soc: 100, load: 1470, avg: 1400, eskom: "on", ls: "off", prep: "off", geyser: 67, sky: "partlycloudy" },
     lowunits:{ pv: 3000, grid: 0,    bat: -1500, soc: 60, load: 900, avg: 900,  eskom: "on",  ls: "off", prep: "off", geyser: 58, sky: "sunny", units: 62 },
   };
   const name = (location.hash.slice(1) || "sunny").split("-")[0];

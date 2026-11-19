@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.3.3";
+  const VERSION = "0.3.4";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -517,8 +517,11 @@
         N.grid.ring.setAttribute("stroke", cssv("--ppc-grid")); N.grid.ic.style.color = cssv("--ppc-grid");
         set("grid", kw(gridW), "kW", gridOn === null ? "checking…" : gridW > 20 ? "buying" : gridW < -20 ? "selling" : "connected", cssv("--ppc-grid"));
       }
-      set("bat", soc == null ? "–" : Math.round(soc) + "%", kw(charge) + " kW", charge > IDLE_W ? "charging" : charge < -IDLE_W ? "discharging" : "idle",
-          charge > IDLE_W ? cssv("--ppc-battery") : charge < -IDLE_W ? cssv("--ppc-water") : null);
+      // A full battery trickles a few watts to stay topped up — call that 'full', not 'charging'.
+      const isFull = soc != null && soc >= 99 && Math.abs(charge) < DOTS_W;
+      set("bat", soc == null ? "–" : Math.round(soc) + "%", kw(charge) + " kW",
+          isFull ? "full" : charge > IDLE_W ? "charging" : charge < -IDLE_W ? "discharging" : "idle",
+          isFull ? cssv("--ppc-battery") : charge > IDLE_W ? cssv("--ppc-battery") : charge < -IDLE_W ? cssv("--ppc-water") : null);
       set("home", kw(home), "kW", "in use");
       N.water.g.style.display = HW.temperature || HW.switch ? "" : "none";
       this._wires.water.style.display = N.water.g.style.display;
@@ -573,7 +576,9 @@
       const total = srcW.solar + srcW.grid + srcW.battery;
       const homeMix = fresh && total > 20 && home > 20 ? srcW : null;
       let batMix = null;
-      if (fresh && charge > IDLE_W) {
+      // only real charging gets a 'where from' ring; a trickle (top-up at 100 %, measurement noise) would
+      // split a few watts into a misleading 'solar + Eskom'
+      if (fresh && charge > DOTS_W && !(soc != null && soc >= 99)) {
         const fromSolar = Math.min(charge, Math.max(0, solar - home - (waterOn ? waterW : 0)));
         batMix = { solar: fromSolar, grid: Math.max(0, charge - fromSolar), battery: 0 };
       }
@@ -614,7 +619,10 @@
       const pills = $("pills");
       pills.className = "pills" + (soc != null && soc < 20 ? " crit" : soc != null && soc < 40 ? " low" : "");
       [...pills.children].forEach((p, i) => p.classList.toggle("on", soc != null && i < Math.round(soc / 10)));
-      $("soc").textContent = soc == null ? "Battery" : `Battery ${Math.round(soc)}%`;
+      // percentage plus the energy it represents, e.g. "Battery 78% · 7.8 of 10 kWh"
+      const capKwh = capWh / 1000, fmtK = v => (Math.round(v * 10) / 10).toString();
+      $("soc").innerHTML = soc == null ? "Battery"
+        : `Battery ${Math.round(soc)}% <small style="font-weight:500;color:var(--ppc-muted);font-size:.82rem">· ${fmtK(soc / 100 * capKwh)} of ${fmtK(capKwh)} kWh</small>`;
       if (charge > IDLE_W && soc != null) {
         $("bstate").textContent = soc >= 99 ? "full" : `charging · full in ${this._dur((100 - soc) / 100 * capWh / charge)}`;
       } else $("bstate").textContent = charge < -IDLE_W ? `using ${kw(-charge)} kW` : soc != null && soc >= 99 ? "full" : "idle";
