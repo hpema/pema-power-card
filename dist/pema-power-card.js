@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.3.4";
+  const VERSION = "0.3.5";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -879,6 +879,12 @@
         add("path", { d: `M${X(hSun).toFixed(1)},${Y(socAtSun).toFixed(1)} L${X(hEnd).toFixed(1)},${Y(socEnd).toFixed(1)}`, class: "sunline" });
         const si = add("svg", { x: X(hSun) - 9, y: T - 2, width: 18, height: 18, viewBox: "0 0 24 24", style: `color:${cssv("--ppc-pv")}` });
         si.innerHTML = ICON.sun;
+        // battery % at sunrise: the answer to "what will we have when the sun comes up?"
+        const sunColor = socAtSun <= cutoff + 0.5 ? "--ppc-off" : socAtSun < low ? "--ppc-water" : "--ppc-battery";
+        add("circle", { cx: X(hSun), cy: Y(socAtSun), r: 5, fill: cssv(sunColor), stroke: cssv("--ppc-bg"), "stroke-width": 2 });
+        // label sits beside the sun icon at the top — never on the level lines or the 15 % / cutoff time labels
+        add("text", { x: X(hSun) - 14, y: T + 11, class: "lbl", "text-anchor": "end", fill: cssv(sunColor),
+                      style: "paint-order:stroke;stroke:var(--ppc-soft);stroke-width:3px" }, `${Math.round(socAtSun)}% at sunrise`);
       }
       const mark = (h, p, colorVar, text, below) => {
         add("circle", { cx: X(h), cy: Y(p), r: 4.5, fill: cssv(colorVar), stroke: cssv("--ppc-bg"), "stroke-width": 2 });
