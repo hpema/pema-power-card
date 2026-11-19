@@ -7,7 +7,7 @@
  * https://github.com/hpema/pema-power-card
  */
 (() => {
-  const VERSION = "0.4.0";
+  const VERSION = "0.4.1";
   const OUTER_R = 39;                           // source-mix ring just outside the node ring (R = 33)
   const RING_LEN = 2 * Math.PI * OUTER_R;
   const GAP = 4;                                // gap between segments, in px along the ring
@@ -924,7 +924,7 @@
  *   usage    — where the house's power came from today (sun / battery / Eskom), hour by hour, spare sun, Eskom per day
  */
 (() => {
-  const VERSION = "0.4.0";
+  const VERSION = "0.4.1";
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const fmt = (x, d = 1) => (+x).toFixed(d);
   const hh = h => String(Math.floor(h + 1e-6) % 24).padStart(2, "0") + ":" + String(Math.round((h % 1) * 60) % 60).padStart(2, "0");
@@ -1250,8 +1250,8 @@
       return `<h2>${esc(c.title || "Where the house's power came from")}</h2><div class="sub">Today so far · the house used ${fmt(D.load)} kWh</div>
         <div class="row"><div><span class="big">${Math.round(pct)}%</span><span class="unit">from the sun</span></div><div style="text-align:right"><span class="big">${fmt(eskom)}</span><span class="unit">kWh from Eskom</span></div></div>
         <div class="bar" style="height:16px"><div style="width:${segW(D.sun)};background:var(--pec-pv)" title="Sun, used straight away"></div><div style="width:${segW(D.batSun)};background:var(--pec-bat)" title="Battery, filled by the sun"></div>${batGrid > .05 ? `<div style="width:${segW(batGrid)};background:repeating-linear-gradient(135deg,var(--pec-bat) 0 4px,var(--pec-grid) 4px 7px)" title="Battery, filled by Eskom"></div>` : ""}<div style="flex:1;background:var(--pec-grid)" title="Eskom"></div></div>
-        <div class="leg"><span><i style="background:var(--pec-pv)"></i>Sun ${fmt(D.sun)}</span><span><i style="background:var(--pec-bat)"></i>Battery ${fmt(D.bat)}</span><span><i style="background:var(--pec-grid)"></i>Eskom ${fmt(eskHouse)}</span></div>
-        <div class="note">${D.bat > .1 ? `The battery's ${fmt(D.bat)} kWh was ${Math.round(D.batSun / D.bat * 100)}% sun stored earlier, so it counts as sun.` : ""}${D.gridChg > .2 ? ` Eskom also put ${fmt(D.gridChg)} kWh into the battery.` : ""}${standby > .2 ? ` About ${fmt(standby)} kWh of the Eskom units is the inverter's own small draw.` : ""}</div>
+        <div class="leg"><span><i style="background:var(--pec-pv)"></i>Sun ${fmt(D.sun)} kWh</span><span><i style="background:var(--pec-bat)"></i>From the battery ${fmt(D.bat)} kWh</span><span><i style="background:var(--pec-grid)"></i>Eskom ${fmt(eskom)} kWh</span></div>
+        <div class="note">${D.bat > .1 ? `What the house took from the battery today was ${Math.round(D.batSun / D.bat * 100)}% sun stored earlier, so it counts as sun.` : ""}${D.gridChg > .2 ? ` ${fmt(D.gridChg)} kWh of the Eskom units went into the battery.` : ""}${standby > .2 ? ` About ${fmt(standby)} kWh of the Eskom units is the inverter's own small draw.` : ""}</div>
         <div class="h3">Hour by hour</div>${svg.join("")}
         <div class="leg"><span><i style="background:var(--pec-pv)"></i>sun</span><span><i style="background:var(--pec-bat)"></i>battery</span><span><i style="background:var(--pec-grid)"></i>Eskom</span><span><i style="border:1.5px dashed var(--pec-pv);background:none"></i>spare sun, not used</span></div>
         <div class="panel">${iconSvg("sunny", 20)}<div>${D.spare > 1 ? `About <b>${fmt(D.spare, 0)} kWh</b> of sun went unused today (dashed boxes). Washing, the dishwasher, ironing or the pool pump in those hours cost nothing.` : `The sun was used well today.`}${eve > .5 ? ` Most Eskom units went in the evening: ${fmt(eve)} kWh after 17:00.` : ""}</div></div>
